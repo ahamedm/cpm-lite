@@ -1,0 +1,25 @@
+{
+  "name": "@cpm-lite/cube",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cube Core semantic layer for CPM Lite, backed by DuckDB 2.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "cubejs-server",
+    "start": "cubejs-server",
+    "load": "node scripts/load-data.mjs",
+    "verify": "node scripts/verify.mjs",
+    "token": "node scripts/mint-token.mjs"
+  },
+  "dependencies": {
+    "@cubejs-backend/duckdb-driver": "1.8.16",
+    "@cubejs-backend/server": "1.8.16",
+    "@duckdb/node-api": "2.0.0-r.1",
+    "jsonwebtoken": "9.0.3"
+  },
+  "overrides": {
+    "@duckdb/node-api": "2.0.0-r.1"
+  }
+}

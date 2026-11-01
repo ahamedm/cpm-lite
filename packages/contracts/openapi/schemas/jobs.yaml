@@ -1,0 +1,193 @@
+JobStatus:
+  type: string
+  enum: [queued, running, completed, failed, cancelled]
+
+JobSummary:
+  type: object
+  required: [job_id, scenario_version_id, status, attempt, queued_at]
+  properties:
+    job_id:
+      type: string
+      format: uuid
+    scenario_version_id:
+      type: string
+      format: uuid
+    status:
+      $ref: '#/JobStatus'
+    attempt:
+      type: integer
+      minimum: 1
+    queued_at:
+      type: string
+      format: date-time
+    finished_at:
+      type: [string, 'null']
+      format: date-time
+
+JobInputs:
+  type: object
+  description: Inputs pinned at submission for reproducible execution.
+  required:
+    - scenario_version_id
+    - model_version_id
+    - rule_version_ids
+    - dataset_snapshot
+    - period_start
+    - period_end
+    - engine_version
+  properties:
+    scenario_version_id:
+      type: string
+      format: uuid
+    model_version_id:
+      type: string
+      format: uuid
+    rule_version_ids:
+      type: array
+      items:
+        type: string
+        format: uuid
+    dataset_snapshot:
+      type: string
+      description: Immutable dataset/version identifier the job reads.
+    period_start:
+      type: string
+      format: date
+    period_end:
+      type: string
+      format: date
+    allocation_strategy:
+      type: [string, 'null']
+      description: Resolved allocation strategy code; null when the scenario has none.
+    engine_version:
+      type: string
+      description: Scenario engine image/code version.
+
+AllocationSummary:
+  type: object
+  required: [pool_total, allocated_total, residual, tolerance, within_tolerance, strategy]
+  properties:
+    pool_total:
+      $ref: './common.yaml#/Money'
+    allocated_total:
+      $ref: './common.yaml#/Money'
+    residual:
+      $ref: './common.yaml#/Money'
+    tolerance:
+      $ref: './common.yaml#/Money'
+    within_tolerance:
+      type: boolean
+    strategy:
+      type: string
+      examples: ['headcount']
+    driver_basis:
+      type: [string, 'null']
+
+RuleOutcome:
+  type: object
+  required: [rule_version_id, rule_code, evaluation_point, decision]
+  properties:
+    rule_version_id:
+      type: string
+      format: uuid
+    rule_code:
+      type: string
+    evaluation_point:
+      type: string
+      enum: [pre_submit, allocation, post_calculation, promotion]
+    decision:
+      type: string
+      enum: [allow, warn, reject]
+    message:
+      type: [string, 'null']
+
+JobResult:
+  type: object
+  required: [result_uri, totals, allocation_summary, rule_outcomes, completed_at]
+  properties:
+    result_uri:
+      type: string
+      description: Durable scenario result location; bulk facts never live in OLTP.
+    totals:
+      $ref: './common.yaml#/FinancialTotals'
+    allocation_summary:
+      $ref: '#/AllocationSummary'
+    rule_outcomes:
+      type: array
+      items:
+        $ref: '#/RuleOutcome'
+    completed_at:
+      type: string
+      format: date-time
+
+JobError:
+  type: object
+  required: [code, message, retryable]
+  properties:
+    code:
+      type: string
+      examples: ['allocation_residual_exceeded']
+    message:
+      type: string
+    retryable:
+      type: boolean
+
+Job:
+  type: object
+  required:
+    - job_id
+    - scenario_version_id
+    - status
+    - attempt
+    - max_attempts
+    - engine_version
+    - inputs
+    - queued_at
+    - created_at
+    - etag
+  properties:
+    job_id:
+      type: string
+      format: uuid
+    scenario_version_id:
+      type: string
+      format: uuid
+    status:
+      $ref: '#/JobStatus'
+    attempt:
+      type: integer
+      minimum: 1
+    max_attempts:
+      type: integer
+      minimum: 1
+    retry_of_job_id:
+      type: [string, 'null']
+      format: uuid
+    engine_version:
+      type: string
+    inputs:
+      $ref: '#/JobInputs'
+    result:
+      oneOf:
+        - $ref: '#/JobResult'
+        - type: 'null'
+    error:
+      oneOf:
+        - $ref: '#/JobError'
+        - type: 'null'
+    queued_at:
+      type: string
+      format: date-time
+    started_at:
+      type: [string, 'null']
+      format: date-time
+    finished_at:
+      type: [string, 'null']
+      format: date-time
+    created_by:
+      type: string
+    created_at:
+      type: string
+      format: date-time
+    etag:
+      type: string

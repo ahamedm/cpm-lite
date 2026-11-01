@@ -1,0 +1,2288 @@
+openapi: 3.1.0
+info:
+  title: CPM Lite Thin Orchestrator API
+  version: 0.1.0
+  description: |
+    Contract for the Thin Layer API and orchestration service. This is a
+    review draft: it defines the HTTP surface and resource model, not the
+    implementation. It covers the model/scenario registry, job submission and
+    status, rule validation hooks, review/promotion workflow, audit access and
+    Cube schema-refresh signals.
+
+    Conventions:
+    - Base path: `/api/v1`; JSON only; UUIDs are strings.
+    - Money and exact decimals are strings, never JSON floats.
+    - Errors use RFC 9457 problem details with a stable `code`.
+    - Mutable resources use `ETag`/`If-Match`; unsafe retryable POSTs require
+      `Idempotency-Key`.
+    - Async operations return `202` with a `Location` header.
+  contact:
+    name: CPM Lite Engineering
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
+servers:
+  - url: http://localhost:8080
+    description: Local development
+  - url: https://api.cpm-lite.example
+    description: Placeholder production host
+tags:
+  - name: Health
+    description: Liveness and readiness probes for the orchestrator.
+  - name: Identity
+    description: The caller's effective identity and scope.
+  - name: Reference
+    description: Departments and cost centres used for scoping.
+  - name: Models
+    description: Model registry, versions, validation and publication.
+  - name: Scenarios
+    description: Scenario registry, versions, validation and results.
+  - name: Jobs
+    description: Asynchronous scenario job submission and monitoring.
+  - name: Rules
+    description: Versioned rules-as-data authoring and publication (phase 2).
+  - name: Review
+    description: Submission, steward decisions and promotion to a plan.
+  - name: Plans
+    description: Official plan and plan-version read model.
+  - name: Audit
+    description: Append-only audit trail access.
+security:
+  - bearerAuth: []
+
+paths:
+  /healthz:
+    get:
+      tags: [Health]
+      operationId: healthz
+      summary: Liveness probe
+      security: []
+      responses:
+        '200':
+          description: Process is alive.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    enum: [ok]
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /readyz:
+    get:
+      tags: [Health]
+      operationId: readyz
+      summary: Readiness probe
+      security: []
+      responses:
+        '200':
+          description: Dependencies are reachable.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, checks]
+                properties:
+                  status:
+                    type: string
+                    enum: [ok]
+                  checks:
+                    type: object
+                    additionalProperties:
+                      type: string
+                      enum: [ok, degraded, unavailable]
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/me:
+    get:
+      tags: [Identity]
+      operationId: getMe
+      summary: Current principal and effective scope
+      x-implementation-slice: 1
+      responses:
+        '200':
+          description: Effective identity and scope derived from the token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Me'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/departments:
+    get:
+      tags: [Reference]
+      operationId: listDepartments
+      summary: List departments visible to the caller
+      x-implementation-slice: 1
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: q
+          in: query
+          schema:
+            type: string
+            maxLength: 200
+      responses:
+        '200':
+          description: Departments.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, page_info]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Department'
+                  page_info:
+                    $ref: '#/components/schemas/PageInfo'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/cost-centres:
+    get:
+      tags: [Reference]
+      operationId: listCostCentres
+      summary: List cost centres visible to the caller
+      x-implementation-slice: 1
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: department_code
+          in: query
+          schema:
+            type: string
+        - name: q
+          in: query
+          schema:
+            type: string
+            maxLength: 200
+      responses:
+        '200':
+          description: Cost centres.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, page_info]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CostCentre'
+                  page_info:
+                    $ref: '#/components/schemas/PageInfo'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/models:
+    get:
+      tags: [Models]
+      operationId: listModels
+      summary: List model definitions
+      x-implementation-slice: 1
+      x-required-roles: [business_user, steward, data_engineer, admin]
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: department_code
+          in: query
+          schema:
+            type: string
+        - name: visibility
+          in: query
+          schema:
+            type: string
+            enum: [department, global]
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [active, archived]
+        - name: q
+          in: query
+          schema:
+            type: string
+            maxLength: 200
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [name, -name, created_at, -created_at, updated_at, -updated_at]
+            default: -updated_at
+      responses:
+        '200':
+          description: Models.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, page_info]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Model'
+                  page_info:
+                    $ref: '#/components/schemas/PageInfo'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [Models]
+      operationId: createModel
+      summary: Create a model and its first draft version
+      x-implementation-slice: 1
+      x-required-roles: [business_user, steward, data_engineer, admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelCreateRequest'
+      responses:
+        '201':
+          description: Model created with a draft version.
+          headers:
+            Location:
+              $ref: '#/components/headers/Location'
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Model'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /api/v1/models/{model_id}:
+    parameters:
+      - $ref: '#/components/parameters/ModelId'
+    get:
+      tags: [Models]
+      operationId: getModel
+      summary: Get a model
+      x-implementation-slice: 1
+      x-required-roles: [business_user, steward, data_engineer, admin]
+      responses:
+        '200':
+          description: Model.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Model'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Models]
+      operationId: updateModel
+      summary: Update model metadata
+      x-implementation-slice: 1
+      x-required-roles: [business_user, steward, data_engineer, admin]
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelUpdateRequest'
+      responses:
+        '200':
+          description: Updated model.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Model'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+    delete:
+      tags: [Models]
+      operationId: archiveModel
+      summary: Archive a model (no hard delete)
+      x-implementation-slice: 1
+      x-required-roles: [business_user, steward, admin]
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '200':
+          description: Archived model.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Model'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+
+  /api/v1/models/{model_id}/versions:
+    parameters:
+      - $ref: '#/components/parameters/ModelId'
+    get:
+      tags: [Models]
+      operationId: listModelVersions
+      summary: List model versions
+      x-implementation-slice: 1
+      x-required-roles: [business_user, steward, data_engineer, admin]
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [draft, validated, published, superseded]
+      responses:
+        '200':
+          description: Model versions.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, page_info]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ModelVersionSummary'
+                  page_info:
+                    $ref: '#/components/schemas/PageInfo'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Models]
+      operationId: createModelVersion
+      summary: Create a new draft model version
+      x-implementation-slice: 1
+      x-required-roles: [business_user, steward, data_engineer, admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelVersionCreateRequest'
+      responses:
+        '201':
+          description: Draft model version.
+          headers:
+            Location:
+              $ref: '#/components/headers/Location'
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelVersion'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /api/v1/model-versions/{model_version_id}:
+    parameters:
+      - $ref: '#/components/parameters/ModelVersionId'
+    get:
+      tags: [Models]
+      operationId: getModelVersion
+      summary: Get a model version
+      x-implementation-slice: 1
+      x-required-roles: [business_user, steward, data_engineer, admin]
+      responses:
+        '200':
+          description: Model version.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelVersion'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Models]
+      operationId: updateModelVersion
+      summary: Update a draft model version
+      x-implementation-slice: 1
+      x-required-roles: [business_user, steward, data_engineer, admin]
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelVersionUpdateRequest'
+      responses:
+        '200':
+          description: Updated draft.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelVersion'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /api/v1/model-versions/{model_version_id}/validate:
+    parameters:
+      - $ref: '#/components/parameters/ModelVersionId'
+    post:
+      tags: [Models]
+      operationId: validateModelVersion
+      summary: Validate a draft model version
+      description: Runs structural and semantic checks; returns a report even when invalid.
+      x-implementation-slice: 1
+      x-required-roles: [business_user, steward, data_engineer, admin]
+      responses:
+        '200':
+          description: Validation report.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationReport'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/v1/model-versions/{model_version_id}/publish:
+    parameters:
+      - $ref: '#/components/parameters/ModelVersionId'
+    post:
+      tags: [Models]
+      operationId: publishModelVersion
+      summary: Publish a validated model version and request a Cube refresh
+      x-implementation-slice: 1
+      x-required-roles: [business_user, steward, data_engineer, admin]
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '202':
+          description: Published; Cube refresh is asynchronous.
+          headers:
+            Location:
+              $ref: '#/components/headers/Location'
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelPublishResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /api/v1/scenarios:
+    get:
+      tags: [Scenarios]
+      operationId: listScenarios
+      summary: List scenarios
+      x-implementation-slice: 1
+      x-required-roles: [business_user, steward, admin]
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: department_code
+          in: query
+          schema:
+            type: string
+        - name: scenario_type
+          in: query
+          schema:
+            type: string
+            enum: [budget, forecast]
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [active, archived]
+        - name: q
+          in: query
+          schema:
+            type: string
+            maxLength: 200
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [name, -name, created_at, -created_at, updated_at, -updated_at]
+            default: -updated_at
+      responses:
+        '200':
+          description: Scenarios.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, page_info]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Scenario'
+                  page_info:
+                    $ref: '#/components/schemas/PageInfo'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [Scenarios]
+      operationId: createScenario
+      summary: Create a scenario and its first draft version
+      x-implementation-slice: 1
+      x-required-roles: [business_user, steward, admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScenarioCreateRequest'
+      responses:
+        '201':
+          description: Scenario created with a draft version.
+          headers:
+            Location:
+              $ref: '#/components/headers/Location'
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Scenario'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /api/v1/scenarios/{scenario_id}:
+    parameters:
+      - $ref: '#/components/parameters/ScenarioId'
+    get:
+      tags: [Scenarios]
+      operationId: getScenario
+      summary: Get a scenario
+      x-implementation-slice: 1
+      x-required-roles: [business_user, steward, admin]
+      responses:
+        '200':
+          description: Scenario.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Scenario'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Scenarios]
+      operationId: updateScenario
+      summary: Update scenario metadata
+      x-implementation-slice: 1
+      x-required-roles: [business_user, steward, admin]
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScenarioUpdateRequest'
+      responses:
+        '200':
+          description: Updated scenario.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Scenario'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+    delete:
+      tags: [Scenarios]
+      operationId: archiveScenario
+      summary: Archive a scenario (no hard delete)
+      x-implementation-slice: 1
+      x-required-roles: [business_user, steward, admin]
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '200':
+          description: Archived scenario.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Scenario'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+
+  /api/v1/scenarios/{scenario_id}/versions:
+    parameters:
+      - $ref: '#/components/parameters/ScenarioId'
+    get:
+      tags: [Scenarios]
+      operationId: listScenarioVersions
+      summary: List scenario versions
+      x-implementation-slice: 1
+      x-required-roles: [business_user, steward, admin]
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [draft, validated, queued, running, completed, failed, cancelled]
+      responses:
+        '200':
+          description: Scenario versions.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, page_info]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ScenarioVersionSummary'
+                  page_info:
+                    $ref: '#/components/schemas/PageInfo'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Scenarios]
+      operationId: createScenarioVersion
+      summary: Create a new draft scenario version
+      x-implementation-slice: 1
+      x-required-roles: [business_user, steward, admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScenarioVersionCreateRequest'
+      responses:
+        '201':
+          description: Draft scenario version.
+          headers:
+            Location:
+              $ref: '#/components/headers/Location'
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScenarioVersion'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /api/v1/scenario-versions/{scenario_version_id}:
+    parameters:
+      - $ref: '#/components/parameters/ScenarioVersionId'
+    get:
+      tags: [Scenarios]
+      operationId: getScenarioVersion
+      summary: Get a scenario version
+      x-implementation-slice: 1
+      x-required-roles: [business_user, steward, admin]
+      responses:
+        '200':
+          description: Scenario version.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScenarioVersion'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Scenarios]
+      operationId: updateScenarioVersion
+      summary: Update a draft scenario version
+      x-implementation-slice: 1
+      x-required-roles: [business_user, steward, admin]
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScenarioVersionUpdateRequest'
+      responses:
+        '200':
+          description: Updated draft.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScenarioVersion'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /api/v1/scenario-versions/{scenario_version_id}/validate:
+    parameters:
+      - $ref: '#/components/parameters/ScenarioVersionId'
+    post:
+      tags: [Scenarios]
+      operationId: validateScenarioVersion
+      summary: Run pre-submit validation without queueing a job
+      x-implementation-slice: 1
+      x-required-roles: [business_user, steward, admin]
+      responses:
+        '200':
+          description: Validation report with resolved rule versions.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScenarioValidationResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/v1/scenario-versions/{scenario_version_id}/jobs:
+    parameters:
+      - $ref: '#/components/parameters/ScenarioVersionId'
+    get:
+      tags: [Jobs]
+      operationId: listScenarioVersionJobs
+      summary: List jobs for a scenario version
+      x-implementation-slice: 1
+      x-required-roles: [business_user, steward, admin]
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [queued, running, completed, failed, cancelled]
+      responses:
+        '200':
+          description: Jobs.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, page_info]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/JobSummary'
+                  page_info:
+                    $ref: '#/components/schemas/PageInfo'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Jobs]
+      operationId: submitScenarioJob
+      summary: Validate and queue a scenario job
+      description: |
+        Performs pre-submit rule validation, pins model/rule versions, writes the
+        job and a dispatch outbox event, then returns 202. Repeating the request
+        with the same Idempotency-Key returns the original job.
+      x-implementation-slice: 1
+      x-required-roles: [business_user, steward, admin]
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '202':
+          description: Job queued.
+          headers:
+            Location:
+              $ref: '#/components/headers/Location'
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Job'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /api/v1/scenario-versions/{scenario_version_id}/results:
+    parameters:
+      - $ref: '#/components/parameters/ScenarioVersionId'
+    get:
+      tags: [Scenarios]
+      operationId: getScenarioVersionResults
+      summary: Get the latest completed result summary
+      x-implementation-slice: 1
+      x-required-roles: [business_user, steward, admin]
+      responses:
+        '200':
+          description: Result summary.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScenarioResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/v1/jobs:
+    get:
+      tags: [Jobs]
+      operationId: listJobs
+      summary: List jobs
+      x-implementation-slice: 1
+      x-required-roles: [business_user, steward, admin]
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [queued, running, completed, failed, cancelled]
+        - name: scenario_version_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: department_code
+          in: query
+          schema:
+            type: string
+        - name: created_from
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: created_to
+          in: query
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Jobs.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, page_info]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/JobSummary'
+                  page_info:
+                    $ref: '#/components/schemas/PageInfo'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/jobs/{job_id}:
+    parameters:
+      - $ref: '#/components/parameters/JobId'
+    get:
+      tags: [Jobs]
+      operationId: getJob
+      summary: Get job status
+      x-implementation-slice: 1
+      x-required-roles: [business_user, steward, admin]
+      responses:
+        '200':
+          description: Job.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Job'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/jobs/{job_id}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/JobId'
+    post:
+      tags: [Jobs]
+      operationId: cancelJob
+      summary: Request job cancellation
+      x-implementation-slice: 1
+      x-required-roles: [business_user, steward, admin]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '202':
+          description: Cancellation requested; job moves to cancelled when the worker acknowledges.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Job'
+        '200':
+          description: Job already terminal; current state returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Job'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/v1/jobs/{job_id}/retry:
+    parameters:
+      - $ref: '#/components/parameters/JobId'
+    post:
+      tags: [Jobs]
+      operationId: retryJob
+      summary: Retry a failed or cancelled job as a new job
+      x-implementation-slice: 1
+      x-required-roles: [business_user, steward, admin]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '202':
+          description: Retry queued as a new job.
+          headers:
+            Location:
+              $ref: '#/components/headers/Location'
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Job'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/v1/rules:
+    get:
+      tags: [Rules]
+      operationId: listRules
+      summary: List business rules
+      x-implementation-slice: 2
+      x-required-roles: [business_user, steward, admin]
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [active, archived]
+        - name: q
+          in: query
+          schema:
+            type: string
+            maxLength: 200
+      responses:
+        '200':
+          description: Rules.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, page_info]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Rule'
+                  page_info:
+                    $ref: '#/components/schemas/PageInfo'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Rules]
+      operationId: createRule
+      summary: Create a rule
+      x-implementation-slice: 2
+      x-required-roles: [steward, admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RuleCreateRequest'
+      responses:
+        '201':
+          description: Rule created.
+          headers:
+            Location:
+              $ref: '#/components/headers/Location'
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Rule'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /api/v1/rules/{rule_id}:
+    parameters:
+      - $ref: '#/components/parameters/RuleId'
+    get:
+      tags: [Rules]
+      operationId: getRule
+      summary: Get a rule
+      x-implementation-slice: 2
+      x-required-roles: [business_user, steward, admin]
+      responses:
+        '200':
+          description: Rule.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Rule'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Rules]
+      operationId: updateRule
+      summary: Update rule metadata
+      x-implementation-slice: 2
+      x-required-roles: [steward, admin]
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RuleUpdateRequest'
+      responses:
+        '200':
+          description: Updated rule.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Rule'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+
+  /api/v1/rules/{rule_id}/versions:
+    parameters:
+      - $ref: '#/components/parameters/RuleId'
+    get:
+      tags: [Rules]
+      operationId: listRuleVersions
+      summary: List rule versions
+      x-implementation-slice: 2
+      x-required-roles: [business_user, steward, admin]
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Rule versions.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, page_info]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/RuleVersionSummary'
+                  page_info:
+                    $ref: '#/components/schemas/PageInfo'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Rules]
+      operationId: createRuleVersion
+      summary: Create a draft rule version
+      x-implementation-slice: 2
+      x-required-roles: [steward, admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RuleVersionCreateRequest'
+      responses:
+        '201':
+          description: Draft rule version.
+          headers:
+            Location:
+              $ref: '#/components/headers/Location'
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuleVersion'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /api/v1/rule-versions/{rule_version_id}:
+    parameters:
+      - $ref: '#/components/parameters/RuleVersionId'
+    get:
+      tags: [Rules]
+      operationId: getRuleVersion
+      summary: Get a rule version
+      x-implementation-slice: 2
+      x-required-roles: [business_user, steward, admin]
+      responses:
+        '200':
+          description: Rule version.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuleVersion'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Rules]
+      operationId: updateRuleVersion
+      summary: Update a draft rule version
+      x-implementation-slice: 2
+      x-required-roles: [steward, admin]
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RuleVersionUpdateRequest'
+      responses:
+        '200':
+          description: Updated draft.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuleVersion'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /api/v1/rule-versions/{rule_version_id}/validate:
+    parameters:
+      - $ref: '#/components/parameters/RuleVersionId'
+    post:
+      tags: [Rules]
+      operationId: validateRuleVersion
+      summary: Validate a draft rule version
+      x-implementation-slice: 2
+      x-required-roles: [steward, admin]
+      responses:
+        '200':
+          description: Validation report.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationReport'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/v1/rule-versions/{rule_version_id}/publish:
+    parameters:
+      - $ref: '#/components/parameters/RuleVersionId'
+    post:
+      tags: [Rules]
+      operationId: publishRuleVersion
+      summary: Publish a validated rule version
+      x-implementation-slice: 2
+      x-required-roles: [steward, admin]
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '200':
+          description: Published rule version.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuleVersion'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /api/v1/rule-versions/{rule_version_id}/retire:
+    parameters:
+      - $ref: '#/components/parameters/RuleVersionId'
+    post:
+      tags: [Rules]
+      operationId: retireRuleVersion
+      summary: Retire an active rule version
+      x-implementation-slice: 2
+      x-required-roles: [steward, admin]
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '200':
+          description: Retired rule version.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuleVersion'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+
+  /api/v1/scenario-versions/{scenario_version_id}/submissions:
+    parameters:
+      - $ref: '#/components/parameters/ScenarioVersionId'
+    post:
+      tags: [Review]
+      operationId: createSubmission
+      summary: Submit a completed scenario version for review
+      x-implementation-slice: 1
+      x-required-roles: [business_user, steward, admin]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubmissionCreateRequest'
+      responses:
+        '201':
+          description: Submission created.
+          headers:
+            Location:
+              $ref: '#/components/headers/Location'
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Submission'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /api/v1/submissions:
+    get:
+      tags: [Review]
+      operationId: listSubmissions
+      summary: List submissions
+      x-implementation-slice: 1
+      x-required-roles: [business_user, steward, admin]
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [submitted, approved, rejected, changes_requested, promoted]
+        - name: scenario_version_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: department_code
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Submissions.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, page_info]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Submission'
+                  page_info:
+                    $ref: '#/components/schemas/PageInfo'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/submissions/{submission_id}:
+    parameters:
+      - $ref: '#/components/parameters/SubmissionId'
+    get:
+      tags: [Review]
+      operationId: getSubmission
+      summary: Get a submission
+      x-implementation-slice: 1
+      x-required-roles: [business_user, steward, admin]
+      responses:
+        '200':
+          description: Submission.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Submission'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/submissions/{submission_id}/decisions:
+    parameters:
+      - $ref: '#/components/parameters/SubmissionId'
+    post:
+      tags: [Review]
+      operationId: decideSubmission
+      summary: Approve, reject or request changes on a submission
+      x-implementation-slice: 1
+      x-required-roles: [steward, admin]
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DecisionRequest'
+      responses:
+        '200':
+          description: Updated submission.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Submission'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /api/v1/submissions/{submission_id}/promotion:
+    parameters:
+      - $ref: '#/components/parameters/SubmissionId'
+    post:
+      tags: [Review]
+      operationId: promoteSubmission
+      summary: Promote an approved submission into a plan version
+      x-implementation-slice: 1
+      x-required-roles: [steward, admin]
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PromotionRequest'
+      responses:
+        '202':
+          description: Promotion accepted; plan version is created asynchronously.
+          headers:
+            Location:
+              $ref: '#/components/headers/Location'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Promotion'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /api/v1/promotions/{promotion_id}:
+    parameters:
+      - $ref: '#/components/parameters/PromotionId'
+    get:
+      tags: [Review]
+      operationId: getPromotion
+      summary: Get promotion status
+      x-implementation-slice: 1
+      x-required-roles: [business_user, steward, admin]
+      responses:
+        '200':
+          description: Promotion.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Promotion'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/plans:
+    get:
+      tags: [Plans]
+      operationId: listPlans
+      summary: List plans
+      x-implementation-slice: 1
+      x-required-roles: [business_user, steward, admin]
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: department_code
+          in: query
+          schema:
+            type: string
+        - name: fiscal_year
+          in: query
+          schema:
+            type: integer
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [active, archived]
+      responses:
+        '200':
+          description: Plans.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, page_info]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Plan'
+                  page_info:
+                    $ref: '#/components/schemas/PageInfo'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [Plans]
+      operationId: createPlan
+      summary: Create a plan shell for promotion
+      x-implementation-slice: 1
+      x-required-roles: [steward, admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PlanCreateRequest'
+      responses:
+        '201':
+          description: Plan created.
+          headers:
+            Location:
+              $ref: '#/components/headers/Location'
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Plan'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /api/v1/plans/{plan_id}:
+    parameters:
+      - $ref: '#/components/parameters/PlanId'
+    get:
+      tags: [Plans]
+      operationId: getPlan
+      summary: Get a plan
+      x-implementation-slice: 1
+      x-required-roles: [business_user, steward, admin]
+      responses:
+        '200':
+          description: Plan.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Plan'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/plans/{plan_id}/versions:
+    parameters:
+      - $ref: '#/components/parameters/PlanId'
+    get:
+      tags: [Plans]
+      operationId: listPlanVersions
+      summary: List plan versions
+      x-implementation-slice: 1
+      x-required-roles: [business_user, steward, admin]
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Plan versions.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, page_info]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PlanVersionSummary'
+                  page_info:
+                    $ref: '#/components/schemas/PageInfo'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/plan-versions/{plan_version_id}:
+    parameters:
+      - $ref: '#/components/parameters/PlanVersionId'
+    get:
+      tags: [Plans]
+      operationId: getPlanVersion
+      summary: Get a plan version
+      x-implementation-slice: 1
+      x-required-roles: [business_user, steward, admin]
+      responses:
+        '200':
+          description: Plan version.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlanVersion'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/audit-events:
+    get:
+      tags: [Audit]
+      operationId: listAuditEvents
+      summary: List append-only audit events
+      x-implementation-slice: 1
+      x-required-roles: [steward, admin]
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: entity_type
+          in: query
+          schema:
+            type: string
+            enum: [model, model_version, scenario, scenario_version, job, rule, rule_version, submission, promotion, plan, plan_version]
+        - name: entity_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: actor_subject
+          in: query
+          schema:
+            type: string
+        - name: action
+          in: query
+          schema:
+            type: string
+        - name: occurred_from
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: occurred_to
+          in: query
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Audit events, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, page_info]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AuditEvent'
+                  page_info:
+                    $ref: '#/components/schemas/PageInfo'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Microsoft Entra ID access token in production. Local development uses a
+        short-lived HS256 token with `sub`, `department_code`, `cost_centre_codes`
+        and `groups` claims.
+
+  parameters:
+    Cursor:
+      name: cursor
+      in: query
+      description: Opaque cursor returned by the previous page.
+      schema:
+        type: string
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+    IfMatch:
+      name: If-Match
+      in: header
+      required: true
+      description: ETag from the last read; rejects the write if the resource changed.
+      schema:
+        type: string
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: |
+        Client-generated key for safe retries. Reusing a key with a different
+        request body returns 409.
+      schema:
+        type: string
+        minLength: 8
+        maxLength: 200
+    ModelId:
+      name: model_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ModelVersionId:
+      name: model_version_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ScenarioId:
+      name: scenario_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ScenarioVersionId:
+      name: scenario_version_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    JobId:
+      name: job_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    RuleId:
+      name: rule_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    RuleVersionId:
+      name: rule_version_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    SubmissionId:
+      name: submission_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    PlanId:
+      name: plan_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    PlanVersionId:
+      name: plan_version_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    PromotionId:
+      name: promotion_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  headers:
+    ETag:
+      description: Weak ETag derived from the resource row version.
+      schema:
+        type: string
+    Location:
+      description: Canonical URL of the created or accepted resource.
+      schema:
+        type: string
+        format: uri-reference
+    XCorrelationId:
+      description: Correlation id echoed from the request or generated by the API.
+      schema:
+        type: string
+    RetryAfter:
+      description: Seconds to wait before retrying.
+      schema:
+        type: integer
+        minimum: 1
+
+  responses:
+    BadRequest:
+      description: Malformed request.
+      headers:
+        X-Correlation-Id:
+          $ref: '#/components/headers/XCorrelationId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Unauthorized:
+      description: Missing or invalid credentials.
+      headers:
+        X-Correlation-Id:
+          $ref: '#/components/headers/XCorrelationId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Forbidden:
+      description: Authenticated but outside the allowed department/role scope.
+      headers:
+        X-Correlation-Id:
+          $ref: '#/components/headers/XCorrelationId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    NotFound:
+      description: Resource does not exist or is outside the caller's scope.
+      headers:
+        X-Correlation-Id:
+          $ref: '#/components/headers/XCorrelationId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Conflict:
+      description: Domain state conflict (invalid transition, duplicate, or key reuse).
+      headers:
+        X-Correlation-Id:
+          $ref: '#/components/headers/XCorrelationId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    PreconditionFailed:
+      description: If-Match did not match the current ETag.
+      headers:
+        X-Correlation-Id:
+          $ref: '#/components/headers/XCorrelationId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    UnprocessableEntity:
+      description: Request is well-formed but violates validation or business rules.
+      headers:
+        X-Correlation-Id:
+          $ref: '#/components/headers/XCorrelationId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    TooManyRequests:
+      description: Rate limit exceeded.
+      headers:
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+        X-Correlation-Id:
+          $ref: '#/components/headers/XCorrelationId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    InternalError:
+      description: Unexpected server error.
+      headers:
+        X-Correlation-Id:
+          $ref: '#/components/headers/XCorrelationId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    ServiceUnavailable:
+      description: A required dependency is unavailable.
+      headers:
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+        X-Correlation-Id:
+          $ref: '#/components/headers/XCorrelationId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+
+  schemas:
+    Problem:
+      $ref: './schemas/common.yaml#/Problem'
+    ValidationIssue:
+      $ref: './schemas/common.yaml#/ValidationIssue'
+    RuleVersionRef:
+      $ref: './schemas/common.yaml#/RuleVersionRef'
+    ValidationReport:
+      $ref: './schemas/common.yaml#/ValidationReport'
+    PageInfo:
+      $ref: './schemas/common.yaml#/PageInfo'
+    Money:
+      $ref: './schemas/common.yaml#/Money'
+    Decimal:
+      $ref: './schemas/common.yaml#/Decimal'
+    CubeRefresh:
+      $ref: './schemas/common.yaml#/CubeRefresh'
+    FinancialTotals:
+      $ref: './schemas/common.yaml#/FinancialTotals'
+    Model:
+      $ref: './schemas/models.yaml#/Model'
+    ModelVersionSummary:
+      $ref: './schemas/models.yaml#/ModelVersionSummary'
+    ModelVersion:
+      $ref: './schemas/models.yaml#/ModelVersion'
+    ModelDefinition:
+      $ref: './schemas/models.yaml#/ModelDefinition'
+    ModelCreateRequest:
+      $ref: './schemas/models.yaml#/ModelCreateRequest'
+    ModelUpdateRequest:
+      $ref: './schemas/models.yaml#/ModelUpdateRequest'
+    ModelVersionCreateRequest:
+      $ref: './schemas/models.yaml#/ModelVersionCreateRequest'
+    ModelVersionUpdateRequest:
+      $ref: './schemas/models.yaml#/ModelVersionUpdateRequest'
+    ModelPublishResponse:
+      $ref: './schemas/models.yaml#/ModelPublishResponse'
+    Scenario:
+      $ref: './schemas/scenarios.yaml#/Scenario'
+    ScenarioVersionSummary:
+      $ref: './schemas/scenarios.yaml#/ScenarioVersionSummary'
+    ScenarioVersion:
+      $ref: './schemas/scenarios.yaml#/ScenarioVersion'
+    ScenarioBase:
+      $ref: './schemas/scenarios.yaml#/ScenarioBase'
+    ScenarioDriver:
+      $ref: './schemas/scenarios.yaml#/ScenarioDriver'
+    ScenarioAdjustment:
+      $ref: './schemas/scenarios.yaml#/ScenarioAdjustment'
+    ScenarioAssumption:
+      $ref: './schemas/scenarios.yaml#/ScenarioAssumption'
+    ScenarioCreateRequest:
+      $ref: './schemas/scenarios.yaml#/ScenarioCreateRequest'
+    ScenarioUpdateRequest:
+      $ref: './schemas/scenarios.yaml#/ScenarioUpdateRequest'
+    ScenarioVersionCreateRequest:
+      $ref: './schemas/scenarios.yaml#/ScenarioVersionCreateRequest'
+    ScenarioVersionUpdateRequest:
+      $ref: './schemas/scenarios.yaml#/ScenarioVersionUpdateRequest'
+    ScenarioValidationResponse:
+      $ref: './schemas/scenarios.yaml#/ScenarioValidationResponse'
+    ScenarioResult:
+      $ref: './schemas/scenarios.yaml#/ScenarioResult'
+    JobStatus:
+      $ref: './schemas/jobs.yaml#/JobStatus'
+    JobSummary:
+      $ref: './schemas/jobs.yaml#/JobSummary'
+    Job:
+      $ref: './schemas/jobs.yaml#/Job'
+    JobInputs:
+      $ref: './schemas/jobs.yaml#/JobInputs'
+    JobResult:
+      $ref: './schemas/jobs.yaml#/JobResult'
+    AllocationSummary:
+      $ref: './schemas/jobs.yaml#/AllocationSummary'
+    RuleOutcome:
+      $ref: './schemas/jobs.yaml#/RuleOutcome'
+    Rule:
+      $ref: './schemas/rules.yaml#/Rule'
+    RuleVersionSummary:
+      $ref: './schemas/rules.yaml#/RuleVersionSummary'
+    RuleVersion:
+      $ref: './schemas/rules.yaml#/RuleVersion'
+    RuleScope:
+      $ref: './schemas/rules.yaml#/RuleScope'
+    RuleDefinition:
+      $ref: './schemas/rules.yaml#/RuleDefinition'
+    RuleCreateRequest:
+      $ref: './schemas/rules.yaml#/RuleCreateRequest'
+    RuleUpdateRequest:
+      $ref: './schemas/rules.yaml#/RuleUpdateRequest'
+    RuleVersionCreateRequest:
+      $ref: './schemas/rules.yaml#/RuleVersionCreateRequest'
+    RuleVersionUpdateRequest:
+      $ref: './schemas/rules.yaml#/RuleVersionUpdateRequest'
+    Submission:
+      $ref: './schemas/workflow.yaml#/Submission'
+    SubmissionCreateRequest:
+      $ref: './schemas/workflow.yaml#/SubmissionCreateRequest'
+    DecisionRequest:
+      $ref: './schemas/workflow.yaml#/DecisionRequest'
+    Promotion:
+      $ref: './schemas/workflow.yaml#/Promotion'
+    PromotionRequest:
+      $ref: './schemas/workflow.yaml#/PromotionRequest'
+    Plan:
+      $ref: './schemas/workflow.yaml#/Plan'
+    PlanCreateRequest:
+      $ref: './schemas/workflow.yaml#/PlanCreateRequest'
+    PlanVersionSummary:
+      $ref: './schemas/workflow.yaml#/PlanVersionSummary'
+    PlanVersion:
+      $ref: './schemas/workflow.yaml#/PlanVersion'
+    AuditEvent:
+      $ref: './schemas/audit.yaml#/AuditEvent'
+    Me:
+      $ref: './schemas/reference.yaml#/Me'
+    Department:
+      $ref: './schemas/reference.yaml#/Department'
+    CostCentre:
+      $ref: './schemas/reference.yaml#/CostCentre'

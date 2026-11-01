@@ -1,0 +1,241 @@
+RuleVersionSummary:
+  type: object
+  required: [rule_version_id, version_number, status, evaluation_point, effective_from]
+  properties:
+    rule_version_id:
+      type: string
+      format: uuid
+    version_number:
+      type: integer
+      minimum: 1
+    status:
+      type: string
+      enum: [draft, active, retired]
+    evaluation_point:
+      type: string
+      enum: [pre_submit, allocation, post_calculation, promotion]
+    effective_from:
+      type: string
+      format: date
+    effective_to:
+      type: [string, 'null']
+      format: date
+
+Rule:
+  type: object
+  required: [rule_id, code, name, status, latest_version, created_at, updated_at, etag]
+  properties:
+    rule_id:
+      type: string
+      format: uuid
+    code:
+      type: string
+      pattern: '^[a-z][a-z0-9_]{2,63}$'
+    name:
+      type: string
+      minLength: 1
+      maxLength: 200
+    description:
+      type: [string, 'null']
+      maxLength: 2000
+    owner_department_code:
+      type: [string, 'null']
+    status:
+      type: string
+      enum: [active, archived]
+    latest_version:
+      oneOf:
+        - $ref: '#/RuleVersionSummary'
+        - type: 'null'
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
+    etag:
+      type: string
+
+RuleVersion:
+  type: object
+  required:
+    - rule_version_id
+    - rule_id
+    - version_number
+    - status
+    - evaluation_point
+    - priority
+    - effective_from
+    - scopes
+    - definition
+    - created_by
+    - created_at
+    - etag
+  properties:
+    rule_version_id:
+      type: string
+      format: uuid
+    rule_id:
+      type: string
+      format: uuid
+    version_number:
+      type: integer
+      minimum: 1
+    status:
+      type: string
+      enum: [draft, active, retired]
+    evaluation_point:
+      type: string
+      enum: [pre_submit, allocation, post_calculation, promotion]
+    priority:
+      type: integer
+      description: Higher priority wins when scopes overlap; ties break by rule_version_id.
+    effective_from:
+      type: string
+      format: date
+    effective_to:
+      type: [string, 'null']
+      format: date
+    scopes:
+      type: array
+      minItems: 1
+      maxItems: 50
+      items:
+        $ref: '#/RuleScope'
+    definition:
+      $ref: '#/RuleDefinition'
+    validation:
+      oneOf:
+        - $ref: './common.yaml#/ValidationReport'
+        - type: 'null'
+    created_by:
+      type: string
+    created_at:
+      type: string
+      format: date-time
+    published_by:
+      type: [string, 'null']
+    published_at:
+      type: [string, 'null']
+      format: date-time
+    retired_at:
+      type: [string, 'null']
+      format: date-time
+    etag:
+      type: string
+
+RuleScope:
+  type: object
+  additionalProperties: false
+  required: [scope_type]
+  properties:
+    scope_type:
+      type: string
+      enum: [global, department, cost_centre, scenario_type]
+    scope_id:
+      type: [string, 'null']
+      description: Required for non-global scopes; null for global.
+      examples: ['finance', 'cc_finance', 'budget']
+
+RuleDefinition:
+  type: object
+  description: >
+    Rules-as-data. Parameters are validated by the rule kind's JSON Schema.
+    Definitions must never contain executable code, SQL, or dynamic imports.
+  additionalProperties: false
+  required: [schema_version, kind, parameters]
+  properties:
+    schema_version:
+      type: string
+      enum: ['1.0']
+    kind:
+      type: string
+      enum: [allocation, validation, promotion]
+    parameters:
+      type: object
+      additionalProperties: true
+      description: Kind-specific declarative parameters.
+    message_template:
+      type: [string, 'null']
+      maxLength: 1000
+
+RuleCreateRequest:
+  type: object
+  additionalProperties: false
+  required: [name]
+  properties:
+    code:
+      type: string
+      pattern: '^[a-z][a-z0-9_]{2,63}$'
+    name:
+      type: string
+      minLength: 1
+      maxLength: 200
+    description:
+      type: [string, 'null']
+      maxLength: 2000
+    owner_department_code:
+      type: [string, 'null']
+
+RuleUpdateRequest:
+  type: object
+  additionalProperties: false
+  minProperties: 1
+  properties:
+    name:
+      type: string
+      minLength: 1
+      maxLength: 200
+    description:
+      type: [string, 'null']
+      maxLength: 2000
+
+RuleVersionCreateRequest:
+  type: object
+  additionalProperties: false
+  required: [evaluation_point, priority, effective_from, scopes, definition]
+  properties:
+    evaluation_point:
+      type: string
+      enum: [pre_submit, allocation, post_calculation, promotion]
+    priority:
+      type: integer
+    effective_from:
+      type: string
+      format: date
+    effective_to:
+      type: [string, 'null']
+      format: date
+    scopes:
+      type: array
+      minItems: 1
+      maxItems: 50
+      items:
+        $ref: '#/RuleScope'
+    definition:
+      $ref: '#/RuleDefinition'
+
+RuleVersionUpdateRequest:
+  type: object
+  additionalProperties: false
+  minProperties: 1
+  properties:
+    evaluation_point:
+      type: string
+      enum: [pre_submit, allocation, post_calculation, promotion]
+    priority:
+      type: integer
+    effective_from:
+      type: string
+      format: date
+    effective_to:
+      type: [string, 'null']
+      format: date
+    scopes:
+      type: array
+      minItems: 1
+      maxItems: 50
+      items:
+        $ref: '#/RuleScope'
+    definition:
+      $ref: '#/RuleDefinition'

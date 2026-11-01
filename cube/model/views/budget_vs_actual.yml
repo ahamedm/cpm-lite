@@ -1,0 +1,51 @@
+views:
+  - name: budget_vs_actual
+    description: >
+      Business-facing budget vs actual view. Measure names are stable for the
+      UI and API; the underlying fact and access policy live in the financials
+      cube.
+
+    cubes:
+      - join_path: financials
+        includes:
+          - budget_amount
+          - actual_amount
+          - variance_amount
+          - variance_pct
+          - actual_to_budget_pct
+          - transaction_count
+          - transaction_date
+          - period
+          - year
+          - quarter
+          - month
+          - payment_method
+          - currency_code
+          - department_code
+
+      - join_path: financials.departments
+        includes:
+          - name: name
+            alias: department
+
+      - join_path: financials.categories
+        includes:
+          - name: name
+            alias: category
+
+      - join_path: financials.regions
+        includes:
+          - name: name
+            alias: region
+
+    accessPolicy:
+      - group: steward
+        rowLevel:
+          allowAll: true
+
+      - group: business_user
+        rowLevel:
+          filters:
+            - member: department_code
+              operator: equals
+              values: ["{SECURITY_CONTEXT.department_code}"]

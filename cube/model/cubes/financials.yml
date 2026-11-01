@@ -1,0 +1,136 @@
+cubes:
+  - name: financials
+    description: >
+      Governed budget vs actual facts from the Kaggle Budget vs Actual Financial
+      Dataset. One row is one source transaction with its budget and actual
+      amounts. Duplicate source rows are removed and invalid dimension rows are
+      quarantined in gold.rejected_financials by the loader.
+
+    sql_table: gold.fact_financials
+
+    joins:
+      - name: departments
+        relationship: many_to_one
+        sql: "{CUBE}.department_code = {departments}.department_code"
+
+      - name: categories
+        relationship: many_to_one
+        sql: "{CUBE}.category_code = {categories}.category_code"
+
+      - name: regions
+        relationship: many_to_one
+        sql: "{CUBE}.region_code = {regions}.region_code"
+
+    dimensions:
+      - name: financial_id
+        description: Deterministic surrogate key for the source row.
+        sql: financial_id
+        type: string
+        primary_key: true
+
+      - name: transaction_id
+        description: Source transaction identifier when present.
+        sql: transaction_id
+        type: string
+
+      - name: transaction_date
+        description: Date the budget/actual pair applies to.
+        sql: transaction_date
+        type: time
+
+      - name: department_code
+        description: Department scope used by row-level access policy.
+        sql: department_code
+        type: string
+
+      - name: category_code
+        sql: category_code
+        type: string
+
+      - name: region_code
+        sql: region_code
+        type: string
+
+      - name: payment_method
+        sql: payment_method
+        type: string
+
+      - name: currency_code
+        description: Reporting currency; this dataset is single-currency USD.
+        sql: currency_code
+        type: string
+
+      - name: period
+        description: Fiscal period in YYYY-MM form.
+        sql: "strftime(transaction_date, '%Y-%m')"
+        type: string
+
+      - name: year
+        sql: "EXTRACT(YEAR FROM transaction_date)"
+        type: number
+
+      - name: quarter
+        sql: "EXTRACT(QUARTER FROM transaction_date)"
+        type: number
+
+      - name: month
+        sql: "EXTRACT(MONTH FROM transaction_date)"
+        type: number
+
+    measures:
+      - name: budget_amount
+        description: Total budgeted amount.
+        sql: budget_amount
+        type: sum
+        format: currency
+        currency: USD
+
+      - name: actual_amount
+        description: Total actual amount.
+        sql: actual_amount
+        type: sum
+        format: currency
+        currency: USD
+
+      - name: variance_amount
+        description: Actual minus budget. Positive means overspend.
+        sql: "actual_amount - budget_amount"
+        type: sum
+        format: currency
+        currency: USD
+
+      - name: variance_pct
+        description: Variance as a fraction of budget.
+        sql: >
+          CASE
+            WHEN SUM(budget_amount) = 0 THEN NULL
+            ELSE (SUM(actual_amount) - SUM(budget_amount)) / SUM(budget_amount)
+          END
+        type: number
+        format: percent
+
+      - name: actual_to_budget_pct
+        description: Actual divided by budget, as a fraction.
+        sql: >
+          CASE
+            WHEN SUM(budget_amount) = 0 THEN NULL
+            ELSE SUM(actual_amount) / SUM(budget_amount)
+          END
+        type: number
+        format: percent
+
+      - name: transaction_count
+        description: Number of governed source rows.
+        type: count
+
+    accessPolicy:
+      - group: steward
+        rowLevel:
+          allowAll: true
+
+      - group: business_user
+        rowLevel:
+          filters:
+            - member: department_code
+              operator: equals
+              values: ["{SECURITY_CONTEXT.department_code}"]

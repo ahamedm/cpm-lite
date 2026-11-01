@@ -1,0 +1,465 @@
+ScenarioVersionSummary:
+  type: object
+  required: [scenario_version_id, version_number, status, review_status, created_at]
+  properties:
+    scenario_version_id:
+      type: string
+      format: uuid
+    version_number:
+      type: integer
+      minimum: 1
+    status:
+      type: string
+      enum: [draft, validated, queued, running, completed, failed, cancelled]
+    review_status:
+      type: string
+      enum: [not_submitted, submitted, approved, rejected, changes_requested, promoted]
+    created_at:
+      type: string
+      format: date-time
+    completed_at:
+      type: [string, 'null']
+      format: date-time
+
+Scenario:
+  type: object
+  required:
+    - scenario_id
+    - code
+    - name
+    - scenario_type
+    - department_code
+    - status
+    - latest_version
+    - created_at
+    - updated_at
+    - etag
+  properties:
+    scenario_id:
+      type: string
+      format: uuid
+    code:
+      type: string
+      pattern: '^[a-z][a-z0-9_]{2,63}$'
+    name:
+      type: string
+      minLength: 1
+      maxLength: 200
+    description:
+      type: [string, 'null']
+      maxLength: 2000
+    scenario_type:
+      type: string
+      enum: [budget, forecast]
+    department_code:
+      type: string
+    cost_centre_code:
+      type: [string, 'null']
+    status:
+      type: string
+      enum: [active, archived]
+    owner_subject:
+      type: string
+    latest_version:
+      $ref: '#/ScenarioVersionSummary'
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
+    etag:
+      type: string
+
+ScenarioVersion:
+  type: object
+  required:
+    - scenario_version_id
+    - scenario_id
+    - version_number
+    - status
+    - review_status
+    - model_version_id
+    - base
+    - period_start
+    - period_end
+    - currency_code
+    - drivers
+    - adjustments
+    - assumptions
+    - created_by
+    - created_at
+    - updated_at
+    - etag
+  properties:
+    scenario_version_id:
+      type: string
+      format: uuid
+    scenario_id:
+      type: string
+      format: uuid
+    version_number:
+      type: integer
+      minimum: 1
+    status:
+      type: string
+      enum: [draft, validated, queued, running, completed, failed, cancelled]
+      description: Execution lifecycle. Review is tracked separately in review_status.
+    review_status:
+      type: string
+      enum: [not_submitted, submitted, approved, rejected, changes_requested, promoted]
+    model_version_id:
+      type: string
+      format: uuid
+    base:
+      $ref: '#/ScenarioBase'
+    period_start:
+      type: string
+      format: date
+      description: First fiscal period (inclusive), first day of month.
+    period_end:
+      type: string
+      format: date
+      description: Last fiscal period (inclusive), last day of month.
+    currency_code:
+      type: string
+      pattern: '^[A-Z]{3}$'
+      examples: ['USD']
+    drivers:
+      type: array
+      maxItems: 500
+      items:
+        $ref: '#/ScenarioDriver'
+    adjustments:
+      type: array
+      maxItems: 500
+      items:
+        $ref: '#/ScenarioAdjustment'
+    assumptions:
+      type: array
+      maxItems: 500
+      items:
+        $ref: '#/ScenarioAssumption'
+    validation:
+      oneOf:
+        - $ref: './common.yaml#/ValidationReport'
+        - type: 'null'
+    latest_job:
+      oneOf:
+        - $ref: './jobs.yaml#/JobSummary'
+        - type: 'null'
+    result:
+      oneOf:
+        - $ref: '#/ScenarioResult'
+        - type: 'null'
+    created_by:
+      type: string
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
+    completed_at:
+      type: [string, 'null']
+      format: date-time
+    etag:
+      type: string
+
+ScenarioBase:
+  oneOf:
+    - $ref: '#/ActualsBase'
+    - $ref: '#/PlanBase'
+    - $ref: '#/ScenarioBaseRef'
+  discriminator:
+    propertyName: base_type
+    mapping:
+      actuals: '#/ActualsBase'
+      plan: '#/PlanBase'
+      scenario: '#/ScenarioBaseRef'
+
+ActualsBase:
+  type: object
+  additionalProperties: false
+  required: [base_type]
+  properties:
+    base_type:
+      type: string
+      enum: [actuals]
+    actuals_as_of:
+      type: [string, 'null']
+      format: date
+      description: Optional cutoff; the job pins the actual dataset snapshot.
+
+PlanBase:
+  type: object
+  additionalProperties: false
+  required: [base_type, plan_version_id]
+  properties:
+    base_type:
+      type: string
+      enum: [plan]
+    plan_version_id:
+      type: string
+      format: uuid
+
+ScenarioBaseRef:
+  type: object
+  additionalProperties: false
+  required: [base_type, scenario_version_id]
+  properties:
+    base_type:
+      type: string
+      enum: [scenario]
+    scenario_version_id:
+      type: string
+      format: uuid
+
+ScenarioDriver:
+  type: object
+  additionalProperties: false
+  required: [driver_code, name, value, unit]
+  properties:
+    driver_code:
+      type: string
+      pattern: '^[a-z][a-z0-9_]{1,63}$'
+    name:
+      type: string
+      minLength: 1
+      maxLength: 200
+    value:
+      $ref: './common.yaml#/Decimal'
+    unit:
+      type: string
+      enum: [percent, currency, headcount, number]
+    dimension_filters:
+      type: object
+      description: Dimension code to required value. Applied when the driver is evaluated.
+      additionalProperties:
+        type: string
+    note:
+      type: [string, 'null']
+      maxLength: 1000
+
+ScenarioAdjustment:
+  type: object
+  additionalProperties: false
+  required: [adjustment_code, name, amount, currency_code]
+  properties:
+    adjustment_code:
+      type: string
+      pattern: '^[a-z][a-z0-9_]{1,63}$'
+    name:
+      type: string
+      minLength: 1
+      maxLength: 200
+    amount:
+      $ref: './common.yaml#/Money'
+    currency_code:
+      type: string
+      pattern: '^[A-Z]{3}$'
+    dimension_filters:
+      type: object
+      additionalProperties:
+        type: string
+    note:
+      type: [string, 'null']
+      maxLength: 1000
+
+ScenarioAssumption:
+  type: object
+  additionalProperties: false
+  required: [assumption_code, name, value, unit]
+  properties:
+    assumption_code:
+      type: string
+      pattern: '^[a-z][a-z0-9_]{1,63}$'
+    name:
+      type: string
+      minLength: 1
+      maxLength: 200
+    value:
+      $ref: './common.yaml#/Decimal'
+    unit:
+      type: string
+      enum: [percent, currency, headcount, number]
+    note:
+      type: [string, 'null']
+      maxLength: 1000
+
+ScenarioCreateRequest:
+  type: object
+  additionalProperties: false
+  required: [name, scenario_type, model_version_id, base, period_start, period_end, drivers]
+  properties:
+    code:
+      type: string
+      pattern: '^[a-z][a-z0-9_]{2,63}$'
+    name:
+      type: string
+      minLength: 1
+      maxLength: 200
+    description:
+      type: [string, 'null']
+      maxLength: 2000
+    scenario_type:
+      type: string
+      enum: [budget, forecast]
+    department_code:
+      type: [string, 'null']
+      description: Stewards may set it; business users are forced to their token scope.
+    cost_centre_code:
+      type: [string, 'null']
+    model_version_id:
+      type: string
+      format: uuid
+      description: Must be a published model version.
+    base:
+      $ref: '#/ScenarioBase'
+    period_start:
+      type: string
+      format: date
+    period_end:
+      type: string
+      format: date
+    currency_code:
+      type: string
+      pattern: '^[A-Z]{3}$'
+      default: USD
+    drivers:
+      type: array
+      maxItems: 500
+      items:
+        $ref: '#/ScenarioDriver'
+    adjustments:
+      type: array
+      maxItems: 500
+      items:
+        $ref: '#/ScenarioAdjustment'
+    assumptions:
+      type: array
+      maxItems: 500
+      items:
+        $ref: '#/ScenarioAssumption'
+
+ScenarioUpdateRequest:
+  type: object
+  additionalProperties: false
+  minProperties: 1
+  properties:
+    name:
+      type: string
+      minLength: 1
+      maxLength: 200
+    description:
+      type: [string, 'null']
+      maxLength: 2000
+    cost_centre_code:
+      type: [string, 'null']
+
+ScenarioVersionCreateRequest:
+  type: object
+  additionalProperties: false
+  required: [model_version_id, base, period_start, period_end, drivers]
+  properties:
+    from_version_id:
+      type: [string, 'null']
+      format: uuid
+    model_version_id:
+      type: string
+      format: uuid
+      description: Must be a published model version.
+    base:
+      $ref: '#/ScenarioBase'
+    period_start:
+      type: string
+      format: date
+    period_end:
+      type: string
+      format: date
+    currency_code:
+      type: string
+      pattern: '^[A-Z]{3}$'
+      default: USD
+    drivers:
+      type: array
+      maxItems: 500
+      items:
+        $ref: '#/ScenarioDriver'
+    adjustments:
+      type: array
+      maxItems: 500
+      items:
+        $ref: '#/ScenarioAdjustment'
+    assumptions:
+      type: array
+      maxItems: 500
+      items:
+        $ref: '#/ScenarioAssumption'
+
+ScenarioVersionUpdateRequest:
+  type: object
+  additionalProperties: false
+  minProperties: 1
+  properties:
+    model_version_id:
+      type: string
+      format: uuid
+    base:
+      $ref: '#/ScenarioBase'
+    period_start:
+      type: string
+      format: date
+    period_end:
+      type: string
+      format: date
+    currency_code:
+      type: string
+      pattern: '^[A-Z]{3}$'
+    drivers:
+      type: array
+      maxItems: 500
+      items:
+        $ref: '#/ScenarioDriver'
+    adjustments:
+      type: array
+      maxItems: 500
+      items:
+        $ref: '#/ScenarioAdjustment'
+    assumptions:
+      type: array
+      maxItems: 500
+      items:
+        $ref: '#/ScenarioAssumption'
+
+ScenarioValidationResponse:
+  type: object
+  required: [model_version_id, report]
+  properties:
+    model_version_id:
+      type: string
+      format: uuid
+    report:
+      $ref: './common.yaml#/ValidationReport'
+
+ScenarioResult:
+  type: object
+  required: [job_id, completed_at, result_uri, totals, allocation_summary, rule_outcomes]
+  properties:
+    job_id:
+      type: string
+      format: uuid
+    completed_at:
+      type: string
+      format: date-time
+    result_uri:
+      type: string
+      description: Durable location of scenario facts (DuckLake/Parquet), not bulk data in OLTP.
+    totals:
+      $ref: './common.yaml#/FinancialTotals'
+    allocation_summary:
+      $ref: './jobs.yaml#/AllocationSummary'
+    rule_outcomes:
+      type: array
+      items:
+        $ref: './jobs.yaml#/RuleOutcome'

@@ -1,0 +1,14 @@
+{
+  "name": "@cpm-lite/contracts",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OpenAPI contracts and shared API schemas for CPM Lite",
+  "scripts": {
+    "lint": "redocly lint openapi/thin-orchestrator.v1.yaml",
+    "bundle": "redocly bundle openapi/thin-orchestrator.v1.yaml -o dist/thin-orchestrator.v1.yaml",
+    "preview": "redocly preview-docs openapi/thin-orchestrator.v1.yaml"
+  },
+  "devDependencies": {
+    "@redocly/cli": "2.72.1"
+  }
+}

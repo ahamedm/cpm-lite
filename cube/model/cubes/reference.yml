@@ -1,0 +1,42 @@
+cubes:
+  - name: departments
+    description: Department reference data.
+    sql_table: gold.dim_department
+
+    dimensions:
+      - name: department_code
+        sql: department_code
+        type: string
+        primary_key: true
+
+      - name: name
+        sql: department_name
+        type: string
+
+  - name: categories
+    description: Spend category reference data.
+    sql_table: gold.dim_category
+
+    dimensions:
+      - name: category_code
+        sql: category_code
+        type: string
+        primary_key: true
+
+      - name: name
+        sql: category_name
+        type: string
+
+  - name: regions
+    description: Region reference data.
+    sql_table: gold.dim_region
+
+    dimensions:
+      - name: region_code
+        sql: region_code
+        type: string
+        primary_key: true
+
+      - name: name
+        sql: region_name
+        type: string

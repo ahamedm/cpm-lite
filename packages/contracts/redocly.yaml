@@ -1,0 +1,13 @@
+extends:
+  - recommended
+
+rules:
+  operation-operationId: error
+  operation-operationId-unique: error
+  operation-4xx-response: error
+  operation-summary: error
+  no-unused-components: error
+  security-defined: error
+  info-license: off
+  tag-description: off
+  no-server-example.com: off

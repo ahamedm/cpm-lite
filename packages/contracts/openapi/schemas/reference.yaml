@@ -1,0 +1,49 @@
+Me:
+  type: object
+  required: [subject, display_name, roles, groups]
+  properties:
+    subject:
+      type: string
+    display_name:
+      type: string
+    email:
+      type: [string, 'null']
+      format: email
+    department_code:
+      type: [string, 'null']
+      description: Null for a steward token that has no home department.
+    cost_centre_codes:
+      type: array
+      items:
+        type: string
+    roles:
+      type: array
+      items:
+        type: string
+        enum: [business_user, steward, data_engineer, admin]
+    groups:
+      type: array
+      items:
+        type: string
+
+Department:
+  type: object
+  required: [department_code, department_name]
+  properties:
+    department_code:
+      type: string
+      examples: ['finance']
+    department_name:
+      type: string
+      examples: ['Finance']
+
+CostCentre:
+  type: object
+  required: [cost_centre_code, department_code, cost_centre_name]
+  properties:
+    cost_centre_code:
+      type: string
+    department_code:
+      type: string
+    cost_centre_name:
+      type: string

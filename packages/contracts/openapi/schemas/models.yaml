@@ -1,0 +1,298 @@
+ModelVersionSummary:
+  type: object
+  required: [model_version_id, version_number, status, created_at]
+  properties:
+    model_version_id:
+      type: string
+      format: uuid
+    version_number:
+      type: integer
+      minimum: 1
+    status:
+      type: string
+      enum: [draft, validated, published, superseded]
+    cube_refresh_status:
+      type: string
+      enum: [not_requested, pending, running, succeeded, failed]
+    created_at:
+      type: string
+      format: date-time
+    published_at:
+      type: [string, 'null']
+      format: date-time
+
+Model:
+  type: object
+  required:
+    - model_id
+    - code
+    - name
+    - department_code
+    - visibility
+    - status
+    - latest_version
+    - created_at
+    - updated_at
+    - etag
+  properties:
+    model_id:
+      type: string
+      format: uuid
+    code:
+      type: string
+      pattern: '^[a-z][a-z0-9_]{2,63}$'
+      examples: ['department_budget']
+    name:
+      type: string
+      minLength: 1
+      maxLength: 200
+    description:
+      type: [string, 'null']
+      maxLength: 2000
+    department_code:
+      type: string
+      examples: ['finance']
+    visibility:
+      type: string
+      enum: [department, global]
+      description: Global models are readable across departments; writes stay owner-scoped.
+    status:
+      type: string
+      enum: [active, archived]
+    owner_subject:
+      type: string
+    latest_version:
+      $ref: '#/ModelVersionSummary'
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
+    etag:
+      type: string
+      examples: ['W/"3"']
+
+ModelVersion:
+  type: object
+  required:
+    - model_version_id
+    - model_id
+    - version_number
+    - status
+    - definition
+    - cube_refresh
+    - created_by
+    - created_at
+    - etag
+  properties:
+    model_version_id:
+      type: string
+      format: uuid
+    model_id:
+      type: string
+      format: uuid
+    version_number:
+      type: integer
+      minimum: 1
+    status:
+      type: string
+      enum: [draft, validated, published, superseded]
+    definition:
+      $ref: '#/ModelDefinition'
+    validation:
+      oneOf:
+        - $ref: './common.yaml#/ValidationReport'
+        - type: 'null'
+    cube_refresh:
+      $ref: './common.yaml#/CubeRefresh'
+    created_by:
+      type: string
+    created_at:
+      type: string
+      format: date-time
+    published_by:
+      type: [string, 'null']
+    published_at:
+      type: [string, 'null']
+      format: date-time
+    superseded_by_version_id:
+      type: [string, 'null']
+      format: uuid
+    etag:
+      type: string
+
+ModelDefinition:
+  type: object
+  description: >
+    Structured model definition. Expressions are restricted, validated
+    expressions, not arbitrary SQL; the model validator rejects unsafe input.
+  additionalProperties: false
+  required: [schema_version, dimensions, measures]
+  properties:
+    schema_version:
+      type: string
+      enum: ['1.0']
+    dimensions:
+      type: array
+      maxItems: 100
+      items:
+        $ref: '#/DimensionDefinition'
+    measures:
+      type: array
+      maxItems: 100
+      items:
+        $ref: '#/MeasureDefinition'
+    joins:
+      type: array
+      maxItems: 50
+      items:
+        $ref: '#/JoinDefinition'
+
+DimensionDefinition:
+  type: object
+  additionalProperties: false
+  required: [code, name, data_type, expression]
+  properties:
+    code:
+      type: string
+      pattern: '^[a-z][a-z0-9_]{1,63}$'
+    name:
+      type: string
+      minLength: 1
+      maxLength: 200
+    data_type:
+      type: string
+      enum: [string, integer, decimal, date, boolean]
+    expression:
+      type: string
+      minLength: 1
+      maxLength: 1000
+      description: Restricted expression referencing approved source columns/functions.
+    description:
+      type: [string, 'null']
+      maxLength: 1000
+
+MeasureDefinition:
+  type: object
+  additionalProperties: false
+  required: [code, name, aggregation, expression, format]
+  properties:
+    code:
+      type: string
+      pattern: '^[a-z][a-z0-9_]{1,63}$'
+    name:
+      type: string
+      minLength: 1
+      maxLength: 200
+    aggregation:
+      type: string
+      enum: [sum, avg, min, max, count, count_distinct]
+    expression:
+      type: string
+      minLength: 1
+      maxLength: 1000
+      description: Restricted expression referencing approved dimensions/columns.
+    format:
+      type: string
+      enum: [number, currency, percent]
+    currency_code:
+      type: [string, 'null']
+      pattern: '^[A-Z]{3}$'
+      examples: ['USD']
+    description:
+      type: [string, 'null']
+      maxLength: 1000
+
+JoinDefinition:
+  type: object
+  additionalProperties: false
+  required: [name, relationship, source_model_code, source_member_code, target_model_code, target_member_code]
+  properties:
+    name:
+      type: string
+      pattern: '^[a-z][a-z0-9_]{1,63}$'
+    relationship:
+      type: string
+      enum: [many_to_one, one_to_many, one_to_one]
+    source_model_code:
+      type: string
+    source_member_code:
+      type: string
+    target_model_code:
+      type: string
+    target_member_code:
+      type: string
+    description:
+      type: [string, 'null']
+      maxLength: 1000
+
+ModelCreateRequest:
+  type: object
+  additionalProperties: false
+  required: [name, visibility, definition]
+  properties:
+    code:
+      type: string
+      pattern: '^[a-z][a-z0-9_]{2,63}$'
+      description: Optional; generated from name when omitted.
+    name:
+      type: string
+      minLength: 1
+      maxLength: 200
+    description:
+      type: [string, 'null']
+      maxLength: 2000
+    department_code:
+      type: [string, 'null']
+      description: Stewards may set it; business users are forced to their token scope.
+    visibility:
+      type: string
+      enum: [department, global]
+    definition:
+      $ref: '#/ModelDefinition'
+
+ModelUpdateRequest:
+  type: object
+  additionalProperties: false
+  minProperties: 1
+  properties:
+    name:
+      type: string
+      minLength: 1
+      maxLength: 200
+    description:
+      type: [string, 'null']
+      maxLength: 2000
+    visibility:
+      type: string
+      enum: [department, global]
+
+ModelVersionCreateRequest:
+  type: object
+  additionalProperties: false
+  required: [definition]
+  properties:
+    from_version_id:
+      type: [string, 'null']
+      format: uuid
+      description: Optional source version used for lineage; definition remains authoritative.
+    definition:
+      $ref: '#/ModelDefinition'
+
+ModelVersionUpdateRequest:
+  type: object
+  additionalProperties: false
+  required: [definition]
+  properties:
+    definition:
+      $ref: '#/ModelDefinition'
+
+ModelPublishResponse:
+  type: object
+  required: [model_version, cube_refresh]
+  properties:
+    model_version:
+      $ref: '#/ModelVersion'
+    cube_refresh:
+      $ref: './common.yaml#/CubeRefresh'

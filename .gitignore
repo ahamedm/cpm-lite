@@ -1,0 +1,23 @@
+# Node
+node_modules/
+npm-debug.log*
+.npm/
+
+# Generated data (rebuild with `make data`)
+data/*.duckdb
+data/*.duckdb.wal
+data/staging/
+data/.duckdb-extensions/
+
+# Local environment
+.env
+.env.local
+cube/.env
+cube/.env.local
+
+# Build / editor output
+dist/
+coverage/
+.cubestore/
+.DS_Store
+*.log

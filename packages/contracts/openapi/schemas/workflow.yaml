@@ -1,0 +1,269 @@
+Submission:
+  type: object
+  required:
+    - submission_id
+    - scenario_version_id
+    - status
+    - submitted_by
+    - submitted_at
+    - etag
+  properties:
+    submission_id:
+      type: string
+      format: uuid
+    scenario_version_id:
+      type: string
+      format: uuid
+    status:
+      type: string
+      enum: [submitted, approved, rejected, changes_requested, promoted]
+    note:
+      type: [string, 'null']
+      maxLength: 2000
+    submitted_by:
+      type: string
+    submitted_at:
+      type: string
+      format: date-time
+    decided_by:
+      type: [string, 'null']
+    decided_at:
+      type: [string, 'null']
+      format: date-time
+    decision_comment:
+      type: [string, 'null']
+      maxLength: 2000
+    promotion_id:
+      type: [string, 'null']
+      format: uuid
+    etag:
+      type: string
+
+SubmissionCreateRequest:
+  type: object
+  additionalProperties: false
+  properties:
+    note:
+      type: [string, 'null']
+      maxLength: 2000
+
+DecisionRequest:
+  type: object
+  additionalProperties: false
+  required: [decision]
+  properties:
+    decision:
+      type: string
+      enum: [approve, reject, request_changes]
+    comment:
+      type: [string, 'null']
+      maxLength: 2000
+  allOf:
+    - if:
+        properties:
+          decision:
+            enum: [reject, request_changes]
+      then:
+        required: [comment]
+        properties:
+          comment:
+            type: string
+            minLength: 1
+            maxLength: 2000
+
+Promotion:
+  type: object
+  required:
+    - promotion_id
+    - submission_id
+    - plan_id
+    - status
+    - requested_at
+    - etag
+  properties:
+    promotion_id:
+      type: string
+      format: uuid
+    submission_id:
+      type: string
+      format: uuid
+    plan_id:
+      type: string
+      format: uuid
+    plan_version_id:
+      type: [string, 'null']
+      format: uuid
+    status:
+      type: string
+      enum: [requested, running, succeeded, failed]
+    requested_at:
+      type: string
+      format: date-time
+    completed_at:
+      type: [string, 'null']
+      format: date-time
+    error:
+      oneOf:
+        - $ref: '#/PromotionError'
+        - type: 'null'
+    etag:
+      type: string
+
+PromotionError:
+  type: object
+  required: [code, message, retryable]
+  properties:
+    code:
+      type: string
+      examples: ['promotion_rule_failed']
+    message:
+      type: string
+    retryable:
+      type: boolean
+
+PromotionRequest:
+  type: object
+  additionalProperties: false
+  required: [plan_id, effective_from]
+  properties:
+    plan_id:
+      type: string
+      format: uuid
+    effective_from:
+      type: string
+      format: date
+    note:
+      type: [string, 'null']
+      maxLength: 2000
+
+Plan:
+  type: object
+  required:
+    - plan_id
+    - code
+    - name
+    - department_code
+    - fiscal_year
+    - status
+    - latest_version
+    - created_at
+    - updated_at
+    - etag
+  properties:
+    plan_id:
+      type: string
+      format: uuid
+    code:
+      type: string
+      pattern: '^[a-z][a-z0-9_]{2,63}$'
+    name:
+      type: string
+      minLength: 1
+      maxLength: 200
+    department_code:
+      type: string
+    fiscal_year:
+      type: integer
+      minimum: 2000
+      maximum: 2200
+    status:
+      type: string
+      enum: [active, archived]
+    latest_version:
+      oneOf:
+        - $ref: '#/PlanVersionSummary'
+        - type: 'null'
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
+    etag:
+      type: string
+
+PlanCreateRequest:
+  type: object
+  additionalProperties: false
+  required: [name, fiscal_year]
+  properties:
+    code:
+      type: string
+      pattern: '^[a-z][a-z0-9_]{2,63}$'
+    name:
+      type: string
+      minLength: 1
+      maxLength: 200
+    department_code:
+      type: [string, 'null']
+      description: Stewards may set it; business users are forced to their token scope.
+    fiscal_year:
+      type: integer
+      minimum: 2000
+      maximum: 2200
+
+PlanVersionSummary:
+  type: object
+  required: [plan_version_id, version_number, status, effective_from, published_at]
+  properties:
+    plan_version_id:
+      type: string
+      format: uuid
+    version_number:
+      type: integer
+      minimum: 1
+    status:
+      type: string
+      enum: [published, superseded]
+    effective_from:
+      type: string
+      format: date
+    published_at:
+      type: string
+      format: date-time
+
+PlanVersion:
+  type: object
+  required:
+    - plan_version_id
+    - plan_id
+    - version_number
+    - status
+    - source_scenario_version_id
+    - source_submission_id
+    - effective_from
+    - totals
+    - published_by
+    - published_at
+    - etag
+  properties:
+    plan_version_id:
+      type: string
+      format: uuid
+    plan_id:
+      type: string
+      format: uuid
+    version_number:
+      type: integer
+      minimum: 1
+    status:
+      type: string
+      enum: [published, superseded]
+    source_scenario_version_id:
+      type: string
+      format: uuid
+    source_submission_id:
+      type: string
+      format: uuid
+    effective_from:
+      type: string
+      format: date
+    totals:
+      $ref: './common.yaml#/FinancialTotals'
+    published_by:
+      type: string
+    published_at:
+      type: string
+      format: date-time
+    etag:
+      type: string

@@ -1,0 +1,137 @@
+Problem:
+  type: object
+  description: RFC 9457 problem details with a stable machine-readable code.
+  required: [type, title, status, code]
+  properties:
+    type:
+      type: string
+      format: uri
+      examples: ['https://errors.cpm-lite.example/validation_error']
+    title:
+      type: string
+      examples: ['Request validation failed']
+    status:
+      type: integer
+      minimum: 400
+      maximum: 599
+    detail:
+      type: string
+    instance:
+      type: string
+      format: uri-reference
+      examples: ['/api/v1/scenarios/3f4c6b1a-6a9e-4a2b-9f1e-1c2d3e4f5a6b']
+    code:
+      type: string
+      description: Stable error code for client branching.
+      examples: ['validation_error']
+    correlation_id:
+      type: string
+      examples: ['01J8Z6Q0K4B7M2N3P5R6S7T8V9']
+    errors:
+      type: array
+      items:
+        $ref: '#/ValidationIssue'
+
+ValidationIssue:
+  type: object
+  required: [severity, path, code, message]
+  properties:
+    severity:
+      type: string
+      enum: [error, warning, info]
+    path:
+      type: string
+      description: RFC 6901 JSON Pointer into the request or resource.
+      examples: ['/drivers/0/value']
+    code:
+      type: string
+      examples: ['driver_value_out_of_range']
+    message:
+      type: string
+
+RuleVersionRef:
+  type: object
+  description: A resolved rule version pinned into a validation or job payload.
+  required: [rule_version_id, rule_code, version_number]
+  properties:
+    rule_version_id:
+      type: string
+      format: uuid
+    rule_code:
+      type: string
+    version_number:
+      type: integer
+      minimum: 1
+
+ValidationReport:
+  type: object
+  required: [valid, validated_at, issues]
+  properties:
+    valid:
+      type: boolean
+    validated_at:
+      type: string
+      format: date-time
+    issues:
+      type: array
+      items:
+        $ref: '#/ValidationIssue'
+    resolved_rule_versions:
+      type: array
+      description: Rules resolved for the validation, pinned for reproducibility.
+      items:
+        $ref: '#/RuleVersionRef'
+
+PageInfo:
+  type: object
+  required: [has_more]
+  properties:
+    next_cursor:
+      type: [string, 'null']
+      description: Opaque cursor for the next page; null when has_more is false.
+    has_more:
+      type: boolean
+
+Money:
+  type: string
+  description: Fixed-point decimal amount with exactly two fraction digits.
+  pattern: '^-?[0-9]{1,15}\.[0-9]{2}$'
+  examples: ['1250000.00']
+
+Decimal:
+  type: string
+  description: Exact decimal as a string. Percentages are fractions (0.15 means 15%).
+  pattern: '^-?[0-9]+(\.[0-9]+)?$'
+  examples: ['0.15', '1250000.00', '-3.5']
+
+CubeRefresh:
+  type: object
+  description: Asynchronous Cube semantic-layer refresh triggered by a model publish.
+  required: [status]
+  properties:
+    status:
+      type: string
+      enum: [not_requested, pending, running, succeeded, failed]
+    requested_at:
+      type: [string, 'null']
+      format: date-time
+    completed_at:
+      type: [string, 'null']
+      format: date-time
+    error:
+      type: [string, 'null']
+      description: Redacted error message when status is failed.
+
+FinancialTotals:
+  type: object
+  required: [budget_amount, actual_amount, variance_amount, currency_code]
+  properties:
+    budget_amount:
+      $ref: '#/Money'
+    actual_amount:
+      $ref: '#/Money'
+    variance_amount:
+      $ref: '#/Money'
+    currency_code:
+      type: string
+      pattern: '^[A-Z]{3}$'
