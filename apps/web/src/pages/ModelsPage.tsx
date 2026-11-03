@@ -1,18 +1,15 @@
 import { useDeferredValue, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { Layers3, Plus, Search } from 'lucide-react';
 import { useAuth } from '../auth';
 import { useModels } from '../queries';
 import { date, countLabel, titleCase } from '../format';
-import { Button, EmptyState, Input, PageHeader, ProblemBanner, SkeletonTable, StatusPill } from '../components/ui';
-import { ModelComposerDialog } from '../components/ModelComposer';
+import { Button, EmptyState, Input, LinkButton, PageHeader, ProblemBanner, SkeletonTable, StatusPill } from '../components/ui';
 
 export function ModelsPage() {
   const { token } = useAuth();
-  const navigate = useNavigate();
   const [search, setSearch] = useState('');
   const deferredSearch = useDeferredValue(search);
-  const [composerOpen, setComposerOpen] = useState(false);
   const models = useModels(token, { limit: 50, q: deferredSearch || undefined });
   const items = models.data?.items ?? [];
 
@@ -22,9 +19,9 @@ export function ModelsPage() {
         title="Models"
         subtitle="Versioned dimensions, measures and joins exposed through the semantic layer."
         actions={
-          <Button variant="primary" icon={Plus} onClick={() => setComposerOpen(true)}>
+          <LinkButton to="/models/new" variant="primary" icon={Plus}>
             New model
-          </Button>
+          </LinkButton>
         }
       />
 
@@ -109,12 +106,6 @@ export function ModelsPage() {
           ) : null}
         </>
       )}
-
-      <ModelComposerDialog
-        open={composerOpen}
-        onClose={() => setComposerOpen(false)}
-        onCreated={(modelId) => navigate(`/models/${modelId}`)}
-      />
     </div>
   );
 }

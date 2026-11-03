@@ -190,6 +190,62 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+  /api/v1/model-sources:
+    get:
+      tags: [Models]
+      operationId: listModelSources
+      summary: List governed sources available for model authoring
+      x-implementation-slice: 1
+      x-required-roles: [business_user, steward, data_engineer, admin]
+      responses:
+        '200':
+          description: Governed sources with column profiles.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelSourceList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/model-preview:
+    post:
+      tags: [Models]
+      operationId: previewModel
+      summary: Preview a draft model against its governed source
+      description: >
+        Executes a read-only aggregate query against the governed source with
+        the caller's department scope. Only allowlisted source columns and
+        aggregations are accepted; arbitrary expressions are rejected.
+      x-implementation-slice: 1
+      x-required-roles: [business_user, steward, data_engineer, admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelPreviewRequest'
+      responses:
+        '200':
+          description: Grouped preview rows and totals.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelPreview'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
   /api/v1/models:
     get:
       tags: [Models]
@@ -2202,6 +2258,12 @@ components:
       $ref: './schemas/models.yaml#/ModelVersionUpdateRequest'
     ModelPublishResponse:
       $ref: './schemas/models.yaml#/ModelPublishResponse'
+    ModelSourceList:
+      $ref: './schemas/models.yaml#/ModelSourceList'
+    ModelPreviewRequest:
+      $ref: './schemas/models.yaml#/ModelPreviewRequest'
+    ModelPreview:
+      $ref: './schemas/models.yaml#/ModelPreview'
     Scenario:
       $ref: './schemas/scenarios.yaml#/Scenario'
     ScenarioVersionSummary:

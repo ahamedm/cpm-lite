@@ -5,6 +5,7 @@ export interface AppConfig {
   host: string;
   port: number;
   dbPath: string;
+  analyticsDbPath: string;
   jwtSecret: string;
   jwtIssuer: string | null;
   serviceToken: string | null;
@@ -42,6 +43,12 @@ export function resolveDbPath(override?: string): string {
   return path.isAbsolute(rawDbPath) ? rawDbPath : path.resolve(repoRoot, rawDbPath);
 }
 
+export function resolveAnalyticsPath(override?: string): string {
+  const repoRoot = findRepoRoot();
+  const rawPath = override ?? process.env.CPM_ANALYTICS_DUCKDB_PATH ?? 'data/cpm_lite_preview.duckdb';
+  return path.isAbsolute(rawPath) ? rawPath : path.resolve(repoRoot, rawPath);
+}
+
 export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   const jwtSecret = overrides.jwtSecret ?? process.env.CPM_API_JWT_SECRET;
   if (!jwtSecret) {
@@ -49,6 +56,7 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   }
 
   const dbPath = resolveDbPath(overrides.dbPath);
+  const analyticsDbPath = resolveAnalyticsPath(overrides.analyticsDbPath);
 
   const corsOrigins = overrides.corsOrigins ?? (process.env.CPM_API_CORS_ORIGINS ?? 'http://localhost:5173,http://localhost:3000')
     .split(',')
@@ -59,6 +67,7 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     host: overrides.host ?? process.env.CPM_API_HOST ?? '0.0.0.0',
     port: overrides.port ?? envInt('CPM_API_PORT', 8080),
     dbPath,
+    analyticsDbPath,
     jwtSecret,
     jwtIssuer: overrides.jwtIssuer !== undefined ? overrides.jwtIssuer : (process.env.CPM_API_JWT_ISSUER ?? null),
     serviceToken: overrides.serviceToken ?? process.env.CPM_API_SERVICE_TOKEN ?? null,

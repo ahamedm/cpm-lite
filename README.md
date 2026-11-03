@@ -179,6 +179,7 @@ curl -X POST http://localhost:8080/internal/v1/jobs/<job_id>/status \
 Implementation notes:
 
 - OLTP file: `data/cpm_lite_oltp.duckdb`, schema `orchestrator`; keep the file name different from the schema to avoid DuckDB catalog/schema ambiguity.
+- Model authoring uses `GET /api/v1/model-sources` for governed source profiles and `POST /api/v1/model-preview` for authorized aggregate previews. Preview reads a read-only copy, `data/cpm_lite_preview.duckdb`, created by `make data`; this avoids competing with Cube for the primary DuckDB lock. Only allowlisted source columns and aggregations are accepted; arbitrary expressions are rejected.
 - Run one API replica while DuckDB is the OLTP store.
 - Kysely is pinned to 0.28.19; a query plugin converts `Date` values to ISO strings and BigInt results to numbers because of `kysely-duckdb` limitations.
 - FKs are kept on immutable reference data; mutable aggregate links are checked by the service because DuckDB can reject updates to rows still referenced by FKs.
@@ -216,6 +217,19 @@ models and model versions, scenarios and runs, jobs, reviews/decisions and
 promotion, plans, rules, audit, and the governed variance view. Use
 `make build-web` for a production build.
 
+### Model Studio
+
+`Models → New model` opens a source-first Model Studio: choose a governed source,
+confirm its grain, select dimensions and measures, set department access, then
+review and create a draft. The draft is validated immediately; publishing stays
+an explicit action on the model page.
+
+The source profile comes from `GET /api/v1/model-sources`; the live preview comes
+from `POST /api/v1/model-preview`, which applies the caller's department scope
+server-side. The preview reads `data/cpm_lite_preview.duckdb`, a read-only copy
+created by `make data`, so it does not contend with Cube for the analytical file
+lock. Join authoring, templates and the code editor remain follow-up slices.
+
 ## Layout
 
 ```
@@ -233,6 +247,10 @@ packages/contracts/          OpenAPI contract + Redocly lint
 db/migrations/               Forward-only OLTP migrations
 db/seeds/                    Synthetic department/cost-centre reference data
 docs/api/                    API design/review notes
+docs/ui/                     Model Studio product/UX brief
+docs/adr/                    Architecture decision records
+PRODUCT.md                   Product truth and user/job context
+DESIGN.md                    Durable visual system and UI guardrails
 data/                        Generated DuckDB files (gitignored)
 sample_data/                 Source workbook (synthetic demo data)
 ```

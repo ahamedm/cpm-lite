@@ -65,6 +65,12 @@ export interface Model {
 
 export interface ModelDefinition {
   schema_version: string;
+  source?: {
+    source_id: string;
+  };
+  access?: {
+    row_level_field: string;
+  };
   dimensions: Array<{
     code: string;
     name: string;
@@ -82,6 +88,65 @@ export interface ModelDefinition {
     description?: string | null;
   }>;
   joins?: Array<Record<string, unknown>>;
+}
+
+export interface ModelSourceColumn {
+  name: string;
+  label: string;
+  data_type: 'string' | 'integer' | 'decimal' | 'date' | 'boolean';
+  nullable: boolean;
+  distinct_count: number;
+  null_count: number;
+  sample_values: string[];
+  suggested_role: 'dimension' | 'measure' | 'time' | 'access';
+  suggested_aggregation: string | null;
+  format: string | null;
+}
+
+export interface ModelSourceRelationship {
+  name: string;
+  target_source_id: string;
+  target_label: string;
+  source_field: string;
+  target_field: string;
+  relationship: 'many_to_one';
+}
+
+export interface ModelSource {
+  source_id: string;
+  name: string;
+  description: string;
+  grain: string;
+  grain_key: string;
+  grain_unique: boolean;
+  row_count: number;
+  refreshed_at: string;
+  columns: ModelSourceColumn[];
+  relationships: ModelSourceRelationship[];
+}
+
+export interface ModelPreviewColumn {
+  code: string;
+  name: string;
+  kind: 'dimension' | 'measure';
+  data_type: string;
+  format: string | null;
+  currency_code: string | null;
+}
+
+export interface ModelPreview {
+  source_id: string;
+  columns: ModelPreviewColumn[];
+  rows: Array<Record<string, string | number | null>>;
+  totals: Record<string, string | number | null>;
+  row_count: number;
+  truncated: boolean;
+  scope: {
+    department_code: string | null;
+    applied: boolean;
+    preview_as: boolean;
+  };
+  generated_at: string;
 }
 
 export interface ModelVersion {

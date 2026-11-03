@@ -124,6 +124,7 @@ Base path `/api/v1`. Full request/response schemas are in the OpenAPI file.
 |---|---|
 | Identity/reference | `GET /me`, `GET /departments`, `GET /cost-centres` |
 | Models | `GET/POST /models`, `GET/PATCH/DELETE /models/{id}`, `GET/POST /models/{id}/versions`, `GET/PATCH /model-versions/{id}`, `POST /model-versions/{id}/validate`, `POST /model-versions/{id}/publish` |
+| Model authoring | `GET /model-sources`, `POST /model-preview` |
 | Scenarios | `GET/POST /scenarios`, `GET/PATCH/DELETE /scenarios/{id}`, `GET/POST /scenarios/{id}/versions`, `GET/PATCH /scenario-versions/{id}`, `POST /scenario-versions/{id}/validate`, `GET /scenario-versions/{id}/results` |
 | Jobs | `GET /jobs`, `GET /jobs/{id}`, `POST /jobs/{id}/cancel`, `POST /jobs/{id}/retry`, `GET/POST /scenario-versions/{id}/jobs` |
 | Rules (phase 2) | `GET/POST /rules`, `GET/PATCH /rules/{id}`, `GET/POST /rules/{id}/versions`, `GET/PATCH /rule-versions/{id}`, `POST /rule-versions/{id}/validate`, `POST /rule-versions/{id}/publish`, `POST /rule-versions/{id}/retire` |
@@ -201,6 +202,25 @@ Key DuckDB constraints that the implementation must respect:
 - **Keep transactions short.** DuckDB serialises writes; long API transactions block everything else.
 - **Forward-only migrations.** No runtime DDL and no ORM auto-sync.
 
+### Model preview snapshot
+
+Model authoring needs real source profiles and a preview without competing with
+Cube for the analytical DuckDB file. `make data` writes a read-only copy,
+`data/cpm_lite_preview.duckdb`, alongside `data/cpm_lite.duckdb`; the API opens
+the copy with `access_mode: READ_ONLY`.
+
+- `GET /api/v1/model-sources` returns the allowlisted `gold.fact_financials`
+  source with row count, grain-key uniqueness, column types, samples, distinct
+  counts and suggested roles.
+- `POST /api/v1/model-preview` accepts a draft definition plus selected
+  dimensions/measures. It executes an aggregate over allowlisted source columns
+  only, filters on `department_code` from the token (stewards may pass
+  `preview_department_code`), and returns rows, totals and scope metadata.
+- Arbitrary SQL, non-allowlisted columns and unsupported aggregations are
+  rejected. Join authoring and calculated-expression preview are deferred.
+
+The snapshot is only as fresh as the last `make data`; the UI states this.
+
 ### ORM: Kysely
 
 Proposed stack: Node.js 24 LTS, TypeScript strict, Fastify 5, Kysely 0.28.19, `kysely-duckdb` 0.4.0, `@duckdb/node-api` 2.0.0-r.1.
@@ -266,6 +286,9 @@ Slice 1 may leave jobs `queued` and Cube refresh `pending`; the API and schema a
 10. Archive instead of hard delete; audit is append-only.
 11. A plan must exist before a promotion; the API does not silently create plans.
 12. Scenario execution status and review status are separate fields.
+13. Source-first model authoring uses an allowlisted source profile and a
+    read-only preview snapshot; arbitrary expressions are not accepted by the
+    preview endpoint.
 
 ---
 
@@ -312,11 +335,12 @@ Deferred: multi-currency/FX, scenario comparison endpoint (Cube serves it), pre-
   - idempotency key with `expires_at <= created_at`.
 - Kysely probe: CRUD, JSON, transaction rollback and reference-table FK enforcement work with the pins above.
 - Built API served `/healthz`, `/docs`, `/api/v1/openapi.json` and authenticated `/api/v1/me` successfully.
+- Model preview test: source profile returns 3 rows in the fixture; finance preview totals `300.00` and sees 2 rows; steward preview-as-finance sees `300.00`; steward unrestricted sees `600.00`; finance requesting HR gets `403`; an unsafe expression gets `422`.
 
 ---
 
 ## 12. Implementation status
 
-1. **Slice 1 — implemented:** migration runner, Kysely DB layer, auth/scope middleware, models/scenarios/jobs, submission/decision/promotion, rules, audit, idempotency, ETags, outbox writes, internal worker callback, Swagger UI, end-to-end test.
+1. **Slice 1 — implemented:** migration runner, Kysely DB layer, auth/scope middleware, models/scenarios/jobs, submission/decision/promotion, rules, audit, idempotency, ETags, outbox writes, internal worker callback, Swagger UI, model source catalog/preview, end-to-end test.
 2. **Slice 2 — partly implemented:** rule authoring exists; Cube refresh worker and job dispatcher integration remain.
 3. **Slice 3 — pending:** PostgreSQL migration, multi-replica API, Cube token exchange with Entra ID.

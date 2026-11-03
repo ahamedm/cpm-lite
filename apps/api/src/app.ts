@@ -7,8 +7,10 @@ import { loadValidationBundle, validateBody, type ValidationBundle } from './val
 import { correlationId as getCorrelationId } from './http.js';
 import { findRepoRoot, loadConfig, type AppConfig } from './config.js';
 import { createDatabase } from './db.js';
+import { createAnalytics } from './analytics.js';
 import { registerHealthRoutes } from './routes/health.js';
 import { registerModelRoutes } from './routes/models.js';
+import { registerModelingRoutes } from './routes/modeling.js';
 import { registerScenarioRoutes } from './routes/scenarios.js';
 import { registerJobRoutes } from './routes/jobs.js';
 import { registerWorkflowRoutes } from './routes/workflow.js';
@@ -41,6 +43,7 @@ export async function buildApp(overrides: Partial<AppConfig> = {}): Promise<Buil
 
   const config = loadConfig(overrides);
   const handle = await createDatabase(config.dbPath);
+  const analytics = createAnalytics(config.analyticsDbPath);
   const specPath = path.join(findRepoRoot(), 'packages', 'contracts', 'openapi', 'thin-orchestrator.v1.yaml');
   if (!existsSync(specPath)) {
     throw new Error(`OpenAPI contract not found at ${specPath}`);
@@ -129,16 +132,18 @@ export async function buildApp(overrides: Partial<AppConfig> = {}): Promise<Buil
     return reply.type('application/json').send(validation.document);
   });
 
-  registerHealthRoutes(app, { db: handle.db, config });
-  registerReferenceRoutes(app, { db: handle.db, config });
-  registerModelRoutes(app, { db: handle.db, config });
-  registerScenarioRoutes(app, { db: handle.db, config });
-  registerJobRoutes(app, { db: handle.db, config });
-  registerWorkflowRoutes(app, { db: handle.db, config });
-  registerRuleRoutes(app, { db: handle.db, config });
-  registerInternalRoutes(app, { db: handle.db, config });
+  registerHealthRoutes(app, { db: handle.db, config, analytics });
+  registerReferenceRoutes(app, { db: handle.db, config, analytics });
+  registerModelRoutes(app, { db: handle.db, config, analytics });
+  registerModelingRoutes(app, { db: handle.db, config, analytics });
+  registerScenarioRoutes(app, { db: handle.db, config, analytics });
+  registerJobRoutes(app, { db: handle.db, config, analytics });
+  registerWorkflowRoutes(app, { db: handle.db, config, analytics });
+  registerRuleRoutes(app, { db: handle.db, config, analytics });
+  registerInternalRoutes(app, { db: handle.db, config, analytics });
 
   app.addHook('onClose', async () => {
+    analytics.close();
     await handle.close();
   });
 

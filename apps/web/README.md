@@ -36,6 +36,24 @@ feel like a precise ledger: calm, dense, and auditable.
 
 Design tokens and primitives live in `src/styles.css` and `src/components/ui.tsx`.
 
+## Model Studio
+
+`/models/new` is a full-page source-first authoring workspace, not a modal. It:
+
+1. loads governed sources and column profiles from `/api/v1/model-sources`;
+2. asks for grain confirmation with a real duplicate-key check;
+3. lets the user pick columns, rename fields, choose aggregation and format;
+4. maps department scope and, for stewards, previews as another department;
+5. shows a live, read-only aggregate preview from `/api/v1/model-preview`;
+6. creates a draft model and validates it; publishing remains on the model page.
+
+The preview reads `data/cpm_lite_preview.duckdb`, built by `make data` as a
+read-only copy of the analytical snapshot. This avoids DuckDB's single-writer
+lock contention with Cube. The preview API only accepts allowlisted source
+columns and aggregations; arbitrary expressions are rejected.
+
+Follow-up slices: join authoring, templates and a code view.
+
 ## Structure
 
 ```
@@ -44,8 +62,8 @@ src/
   auth.tsx           sessionStorage token context
   queries.ts         TanStack Query hooks and paged queries
   format.ts          money/percent/date/person labels
-  components/        app shell, dialogs, tables, status, toasts, composers
-  pages/             portfolio, models, scenarios, jobs, reviews, plans, rules, variance, audit
+  components/        app shell, dialogs, tables, status, toasts
+  pages/             portfolio, models, model studio, scenarios, jobs, reviews, plans, rules, variance, audit
 ```
 
 Every screen has loading, empty, error and disabled states. Jobs remain `queued`

@@ -2,10 +2,24 @@ export type JsonObject = Record<string, any>;
 
 export interface ModelDefinition {
   schema_version: string;
+  source?: {
+    source_id: string;
+  };
+  access?: {
+    row_level_field: string;
+  };
   dimensions: JsonObject[];
   measures: JsonObject[];
   joins?: JsonObject[];
   [key: string]: unknown;
+}
+
+export interface ModelPreviewRequest {
+  definition: ModelDefinition;
+  group_by: string[];
+  measures: string[];
+  limit?: number;
+  preview_department_code?: string | null;
 }
 
 export interface ModelCreateRequest {

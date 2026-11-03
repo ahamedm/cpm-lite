@@ -10,9 +10,9 @@ Verified on 2026-11-01:
 | Area | Implemented |
 |---|---|
 | **Semantic layer** | Cube 1.8.16 over DuckDB 2.0; 9,995 governed facts across 6 departments; `budget_vs_actual` view; department row-level policies. `make verify` checks totals, scoping, the joined view and auth failures. |
-| **OLTP + API** | 20-table `orchestrator` schema in `data/cpm_lite_oltp.duckdb`; Fastify 5 + Kysely API for models, scenarios, jobs, rules, submissions/decisions, promotions, plans, audit and reference data. Swagger UI at `/docs`, OpenAPI at `/api/v1/openapi.json`; ETags, idempotency, outbox and worker callback are implemented. `make verify-api` covers the end-to-end workflow and denials. |
-| **UI** | React 19 + Vite task UI covering connection, portfolio, models/model versions, scenarios/validation/runs, jobs, reviews/decisions, promotion, plans, rules, audit and the Cube-backed variance view. `make build-web` typechecks and builds; the flows were reviewed at 1440 px and 390 px. |
-| **Docs** | PRD, C4 DSL, ADRs 0001 and 0002, API design notes, root README and `apps/web/README.md`. |
+| **OLTP + API** | 20-table `orchestrator` schema in `data/cpm_lite_oltp.duckdb`; Fastify 5 + Kysely API for models, scenarios, jobs, rules, submissions/decisions, promotions, plans, audit and reference data. Governed source profiling at `/api/v1/model-sources` and authorized aggregate preview at `/api/v1/model-preview`; preview reads the read-only `data/cpm_lite_preview.duckdb` snapshot. Swagger UI at `/docs`, OpenAPI at `/api/v1/openapi.json`; ETags, idempotency, outbox and worker callback are implemented. `make verify-api` covers the end-to-end workflow and denials. |
+| **UI** | React 19 + Vite task UI covering connection, portfolio, models/model versions, the source-first Model Studio, scenarios/validation/runs, jobs, reviews/decisions, promotion, plans, rules, audit and the Cube-backed variance view. `make build-web` typechecks and builds; the flows were reviewed at 1440 px and 390 px. |
+| **Docs** | PRD, C4 DSL, ADRs 0001–0003, API design notes, Model Studio brief, PRODUCT.md, DESIGN.md, root README and `apps/web/README.md`. |
 | **Checks** | `make test` passes: Cube verifier, OpenAPI lint, API typecheck/end-to-end test, UI production build. |
 
 Still outstanding: the external scenario worker, Cube refresh worker, Entra ID integration, PostgreSQL migration, Cube Store/pre-aggregations, and the open decisions below.
@@ -37,6 +37,7 @@ It is deliberately a **thin layer** over Cube Core, DuckDB/DuckLake, PostgreSQL 
 | `docs/EPM_CPM_Platform_PRD.md` | Product scope, functional requirements (FR-*), NFR placeholders, roles |
 | `design/c4_architecture_intent.dsl` | Containers, components, responsibilities, relationships, Azure deployment intent |
 | `packages/contracts/openapi/thin-orchestrator.v1.yaml` | HTTP contract for the Thin Orchestrator API (implemented phase 1) |
+| `docs/ui/model-studio.md` | Agreed Model Studio flow, API needs and MVP boundary |
 | `docs/api/thin-orchestrator-api.md` | API design, state machines, persistence and review questions |
 | `AGENTS.md` (this file) | Engineering rules and conventions for agents and humans |
 
@@ -113,7 +114,7 @@ tests/               Cross-service integration/e2e fixtures
 
 The Thin Orchestrator API is implemented in `apps/api` (Fastify 5 + Kysely + DuckDB) and serves Swagger UI at `/docs` and the OpenAPI JSON at `/api/v1/openapi.json`. It covers models, scenarios, jobs, rules, review/decisions, promotion, plans, audit, idempotency, ETags and an internal worker callback. Scenario compute, Cube refresh and job dispatch remain external workers. See `docs/adr/0002-thin-orchestrator-api.md`.
 
-The Thin Layer UI is implemented in `apps/web` (React 19 + Vite + TanStack Query) with a custom ledger-style design system. It covers the portfolio overview, models, scenarios, jobs, reviews/decisions, promotion, plans, rules, audit and the Cube-backed variance view. API/Cube tokens are entered on the Connection screen and kept in session storage. See `apps/web/README.md`.
+The Thin Layer UI is implemented in `apps/web` (React 19 + Vite + TanStack Query) with a custom ledger-style design system. It covers the portfolio overview, models, the source-first Model Studio, scenarios, jobs, reviews/decisions, promotion, plans, rules, audit and the Cube-backed variance view. API/Cube tokens are entered on the Connection screen and kept in session storage. See `apps/web/README.md` and `docs/ui/model-studio.md`.
 
 ### Canonical flows
 
@@ -272,7 +273,7 @@ Record the resolution in an ADR and update this file when decided.
 
 ## Notes
 
-- `make data` builds 10,010 raw rows → 10,000 after exact-duplicate collapse → 9,995 governed facts; 5 rows are quarantined in `gold.rejected_financials` for missing department/category/region.
+- `make data` builds 10,010 raw rows → 10,000 after exact-duplicate collapse → 9,995 governed facts; 5 rows are quarantined in `gold.rejected_financials` for missing department/category/region. It also writes `data/cpm_lite_preview.duckdb`, the read-only snapshot used by Model Studio preview.
 - Cube's DuckDB driver 1.8.16 pins `@duckdb/node-api@1.5.5`; the `overrides` entry to `2.0.0-r.1` is required to read DuckDB 2.0 files. Re-check on every Cube upgrade and run `make verify`.
 - Cube resolves `schemaPath` relative to the process working directory (`path.join(cwd, schemaPath)`), not relative to `cube.js`.
 - `CUBEJS_DEV_MODE=true` disables Cube's security enforcement. `.env.example` sets it to `false`; `make verify` runs with its own secret from a temp directory so a local `.env` cannot weaken the checks.
@@ -287,3 +288,5 @@ Record the resolution in an ADR and update this file when decided.
 - API jobs stay `queued` until the external worker calls `POST /internal/v1/jobs/{job_id}/status` with `X-CPM-Service-Token`; Cube refresh stays `pending` until its worker exists.
 - The UI is a **product** register: IBM Plex Sans/Mono, cool neutral canvas, ink rail, copper action accent, 1px rules, dense ledger tables, native dialogs, no gradients/card grids/glass. Tokens live in `apps/web/src/styles.css`; keep new screens on the same vocabulary.
 - Vite proxies `/api`, `/docs` and `/cubejs-api`; UI tokens are stored in `sessionStorage` and cleared on sign-out. There is no token endpoint in the API.
+- Model Studio is source-first: `/models/new` uses `/api/v1/model-sources` and `/api/v1/model-preview`; the preview query only accepts allowlisted source columns and aggregations. The API opens `data/cpm_lite_preview.duckdb` read-only because Cube owns the primary DuckDB file; refresh the snapshot with `make data`. Join authoring, templates and a code editor remain follow-up slices.
+- The `impeccable` skill was installed and its detector was run over the Model Studio UI (`[]` findings). Keep using it for any further UI change; see the mandatory UI section above.

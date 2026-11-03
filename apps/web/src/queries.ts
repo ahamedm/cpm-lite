@@ -3,10 +3,13 @@ import * as api from './api';
 import type { ApiResult } from './api';
 import type {
   AuditEvent,
+  Department,
   Job,
   JobSummary,
   Me,
   Model,
+  ModelPreview,
+  ModelSource,
   ModelVersion,
   Page,
   Plan,
@@ -20,7 +23,10 @@ import type {
 
 export const qk = {
   me: ['me'] as const,
+  departments: () => ['departments'] as const,
   models: (params: api.ListParams = {}) => ['models', params] as const,
+  modelSources: () => ['model-sources'] as const,
+  modelPreview: (body: unknown) => ['model-preview', body] as const,
   model: (id: string) => ['model', id] as const,
   modelVersion: (id: string) => ['model-version', id] as const,
   scenarios: (params: api.ListParams = {}) => ['scenarios', params] as const,
@@ -79,6 +85,15 @@ export function useMe(token: string | null) {
   });
 }
 
+export function useDepartments(token: string | null, enabled = true) {
+  return useQuery<ApiResult<Page<Department>>, Error>({
+    queryKey: qk.departments(),
+    queryFn: () => api.listDepartments(token!),
+    enabled: Boolean(token) && enabled,
+    staleTime: 60_000,
+  });
+}
+
 export function useModels(token: string | null, params: api.ListParams = {}) {
   return usePaged(qk.models(params), token, (cursor) => api.listModels(token!, { ...params, cursor }));
 }
@@ -88,6 +103,35 @@ export function useModel(token: string | null, id: string | undefined) {
     queryKey: qk.model(id ?? ''),
     queryFn: () => api.getModel(token!, id!),
     enabled: Boolean(token && id),
+  });
+}
+
+export function useModelSources(token: string | null) {
+  return useQuery<ApiResult<Page<ModelSource>>, Error>({
+    queryKey: qk.modelSources(),
+    queryFn: () => api.listModelSources(token!),
+    enabled: Boolean(token),
+    staleTime: 60_000,
+  });
+}
+
+export function useModelPreview(
+  token: string | null,
+  body: {
+    definition: import('./types').ModelDefinition;
+    group_by: string[];
+    measures: string[];
+    limit?: number;
+    preview_department_code?: string | null;
+  },
+  enabled = true
+) {
+  return useQuery<ApiResult<ModelPreview>, Error>({
+    queryKey: qk.modelPreview(body),
+    queryFn: ({ signal }) => api.previewModel(token!, body, signal),
+    enabled: Boolean(token) && enabled,
+    staleTime: 5_000,
+    retry: false,
   });
 }
 

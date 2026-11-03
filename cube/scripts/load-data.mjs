@@ -9,7 +9,7 @@
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { DuckDBInstance } from '@duckdb/node-api';
@@ -19,6 +19,8 @@ const zipPath =
   process.env.CPM_SOURCE_ZIP ||
   path.join(repoRoot, 'sample_data/kaggle_kennathalexanderroy_budget_actual_financial_dataset.zip');
 const dbPath = process.env.CPM_DUCKDB_PATH || path.join(repoRoot, 'data/cpm_lite.duckdb');
+const previewPath =
+  process.env.CPM_PREVIEW_DUCKDB_PATH || path.join(path.dirname(dbPath), 'cpm_lite_preview.duckdb');
 const stagingDir = path.join(repoRoot, 'data/staging');
 const extensionDir = path.join(repoRoot, 'data/.duckdb-extensions');
 const xlsxName = 'Budget_vs_Actual_Data.xlsx';
@@ -309,6 +311,7 @@ async function main() {
       JSON.stringify(
         {
           database: dbPath,
+          preview_database: previewPath,
           load_id: loadId,
           source_file: path.relative(repoRoot, zipPath),
           source_sha256: sourceSha256,
@@ -327,6 +330,10 @@ async function main() {
     connection.closeSync();
     instance.closeSync();
   }
+
+  // The API previews the governed snapshot without competing with Cube for the
+  // single-writer DuckDB lock. This copy is read-only to the API.
+  copyFileSync(dbPath, previewPath);
 }
 
 main().catch((error) => {

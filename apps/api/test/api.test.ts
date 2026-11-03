@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { DuckDBInstance } from '@duckdb/node-api';
 import { buildApp } from '../src/app.js';
 import { signToken } from '../src/auth.js';
 import { applyMigrations, applySeeds } from '../src/migrate.js';
@@ -21,11 +22,38 @@ function idempotent(token: string, key: string, extra: Record<string, string> = 
 test('Thin Orchestrator API end-to-end', async () => {
   const tempDir = mkdtempSync(path.join(os.tmpdir(), 'cpm-api-test-'));
   const dbPath = path.join(tempDir, 'oltp.duckdb');
+  const analyticsPath = path.join(tempDir, 'analytics.duckdb');
   await applyMigrations(dbPath);
   await applySeeds(dbPath);
 
+  const analyticsInstance = await DuckDBInstance.create(analyticsPath);
+  const analyticsConnection = await analyticsInstance.connect();
+  await analyticsConnection.run(`
+    CREATE SCHEMA gold;
+    CREATE TABLE gold.fact_financials (
+      financial_id VARCHAR PRIMARY KEY,
+      transaction_id VARCHAR,
+      transaction_date DATE NOT NULL,
+      department_code VARCHAR NOT NULL,
+      category_code VARCHAR NOT NULL,
+      region_code VARCHAR NOT NULL,
+      payment_method VARCHAR NOT NULL,
+      budget_amount DECIMAL(18, 2) NOT NULL,
+      actual_amount DECIMAL(18, 2) NOT NULL,
+      variance_amount DECIMAL(18, 2) NOT NULL,
+      currency_code VARCHAR NOT NULL
+    );
+    INSERT INTO gold.fact_financials VALUES
+      ('f1', 't1', DATE '2026-01-15', 'finance', 'software', 'north', 'card', 100.00, 120.00, 20.00, 'USD'),
+      ('f2', 't2', DATE '2026-02-15', 'finance', 'software', 'north', 'card', 200.00, 180.00, -20.00, 'USD'),
+      ('h1', 't3', DATE '2026-01-20', 'hr', 'payroll', 'west', 'transfer', 300.00, 310.00, 10.00, 'USD');
+  `);
+  analyticsConnection.closeSync();
+  analyticsInstance.closeSync();
+
   const { app } = await buildApp({
     dbPath,
+    analyticsDbPath: analyticsPath,
     jwtSecret,
     serviceToken,
     jwtIssuer: null,
@@ -71,6 +99,109 @@ test('Thin Orchestrator API end-to-end', async () => {
     const me = await app.inject({ method: 'GET', url: '/api/v1/me', headers: auth(finance) });
     assert.equal(me.statusCode, 200);
     assert.equal(me.json().department_code, 'finance');
+
+    const modelSources = await app.inject({
+      method: 'GET',
+      url: '/api/v1/model-sources',
+      headers: auth(finance),
+    });
+    assert.equal(modelSources.statusCode, 200, modelSources.body);
+    const source = modelSources.json().data[0];
+    assert.equal(source.source_id, 'gold.fact_financials');
+    assert.equal(source.row_count, 3);
+    assert.equal(source.grain_unique, true);
+    assert.ok(source.columns.some((column: { name: string; suggested_role: string }) => column.name === 'budget_amount' && column.suggested_role === 'measure'));
+
+    const previewDefinition = {
+      schema_version: '1.0',
+      source: { source_id: 'gold.fact_financials' },
+      access: { row_level_field: 'department_code' },
+      dimensions: [
+        { code: 'department', name: 'Department', data_type: 'string', expression: 'department_code' },
+      ],
+      measures: [
+        {
+          code: 'budget',
+          name: 'Budget',
+          aggregation: 'sum',
+          expression: 'budget_amount',
+          format: 'currency',
+          currency_code: 'USD',
+        },
+      ],
+    };
+
+    const financePreview = await app.inject({
+      method: 'POST',
+      url: '/api/v1/model-preview',
+      headers: auth(finance),
+      payload: { definition: previewDefinition, group_by: ['department'], measures: ['budget'], limit: 10 },
+    });
+    assert.equal(financePreview.statusCode, 200, financePreview.body);
+    assert.equal(financePreview.json().row_count, 2);
+    assert.equal(String(financePreview.json().totals.budget), '300.00');
+    assert.equal(financePreview.json().rows[0].department, 'finance');
+    assert.equal(financePreview.json().scope.applied, true);
+
+    const crossDepartmentPreview = await app.inject({
+      method: 'POST',
+      url: '/api/v1/model-preview',
+      headers: auth(finance),
+      payload: {
+        definition: previewDefinition,
+        group_by: ['department'],
+        measures: ['budget'],
+        preview_department_code: 'hr',
+      },
+    });
+    assert.equal(crossDepartmentPreview.statusCode, 403);
+
+    const stewardScopedPreview = await app.inject({
+      method: 'POST',
+      url: '/api/v1/model-preview',
+      headers: auth(steward),
+      payload: {
+        definition: previewDefinition,
+        group_by: ['department'],
+        measures: ['budget'],
+        preview_department_code: 'finance',
+      },
+    });
+    assert.equal(stewardScopedPreview.statusCode, 200, stewardScopedPreview.body);
+    assert.equal(String(stewardScopedPreview.json().totals.budget), '300.00');
+    assert.equal(stewardScopedPreview.json().scope.preview_as, true);
+
+    const stewardAllPreview = await app.inject({
+      method: 'POST',
+      url: '/api/v1/model-preview',
+      headers: auth(steward),
+      payload: { definition: previewDefinition, group_by: ['department'], measures: ['budget'] },
+    });
+    assert.equal(stewardAllPreview.statusCode, 200, stewardAllPreview.body);
+    assert.equal(String(stewardAllPreview.json().totals.budget), '600.00');
+    assert.equal(stewardAllPreview.json().scope.applied, false);
+
+    const unsafePreview = await app.inject({
+      method: 'POST',
+      url: '/api/v1/model-preview',
+      headers: auth(finance),
+      payload: {
+        definition: {
+          ...previewDefinition,
+          dimensions: [
+            {
+              code: 'department',
+              name: 'Department',
+              data_type: 'string',
+              expression: 'department_code; DROP TABLE gold.fact_financials',
+            },
+          ],
+        },
+        group_by: ['department'],
+        measures: ['budget'],
+      },
+    });
+    assert.equal(unsafePreview.statusCode, 422);
 
     const unauthenticated = await app.inject({ method: 'GET', url: '/api/v1/models' });
     assert.equal(unauthenticated.statusCode, 401);

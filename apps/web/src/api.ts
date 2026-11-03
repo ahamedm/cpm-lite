@@ -8,6 +8,8 @@ import type {
   Me,
   Model,
   ModelDefinition,
+  ModelPreview,
+  ModelSource,
   ModelVersion,
   ModelVersionSummary,
   Page,
@@ -211,6 +213,21 @@ export const listModels = (token: string, params: ListParams = {}) =>
   list<Model>('/api/v1/models', { limit: 50, ...params }, { token });
 
 export const getModel = (token: string, id: string) => get<Model>(`/api/v1/models/${id}`, { token });
+
+export const listModelSources = (token: string) =>
+  list<ModelSource>('/api/v1/model-sources', { limit: 50 }, { token });
+
+export const previewModel = (
+  token: string,
+  body: {
+    definition: ModelDefinition;
+    group_by: string[];
+    measures: string[];
+    limit?: number;
+    preview_department_code?: string | null;
+  },
+  signal?: AbortSignal
+) => post<ModelPreview>('/api/v1/model-preview', body, { token, signal });
 
 export const createModel = (
   token: string,

@@ -8,6 +8,7 @@ import { ConnectPage } from './pages/ConnectPage';
 import { OverviewPage } from './pages/OverviewPage';
 import { ModelsPage } from './pages/ModelsPage';
 import { ModelDetailPage } from './pages/ModelDetailPage';
+import { ModelStudioPage } from './pages/ModelStudioPage';
 import { ScenariosPage } from './pages/ScenariosPage';
 import { ScenarioDetailPage } from './pages/ScenarioDetailPage';
 import { JobsPage } from './pages/JobsPage';
@@ -58,6 +59,7 @@ export function App() {
                 <Route element={<AppShell />}>
                   <Route index element={<OverviewPage />} />
                   <Route path="models" element={<ModelsPage />} />
+                  <Route path="models/new" element={<ModelStudioPage />} />
                   <Route path="models/:modelId" element={<ModelDetailPage />} />
                   <Route path="scenarios" element={<ScenariosPage />} />
                   <Route path="scenarios/:scenarioId" element={<ScenarioDetailPage />} />

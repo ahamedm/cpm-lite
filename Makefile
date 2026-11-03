@@ -56,5 +56,5 @@ typecheck-web:
 test: verify lint-api typecheck-api verify-api build-web
 
 clean:
-	rm -f data/cpm_lite.duckdb data/cpm_lite.duckdb.wal data/cpm_lite_oltp.duckdb data/cpm_lite_oltp.duckdb.wal
+	rm -f data/cpm_lite.duckdb data/cpm_lite.duckdb.wal data/cpm_lite_preview.duckdb data/cpm_lite_preview.duckdb.wal data/cpm_lite_oltp.duckdb data/cpm_lite_oltp.duckdb.wal
 	rm -rf data/staging data/.duckdb-extensions cube/.cubestore apps/web/dist
