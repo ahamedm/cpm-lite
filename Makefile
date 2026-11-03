@@ -4,8 +4,9 @@ API_DIR := apps/api
 WEB_DIR := apps/web
 CONTRACTS_DIR := packages/contracts
 NPM ?= npm
+NODE ?= node
 
-.PHONY: setup data cube verify lint-api migrate-api seed-api api build-api typecheck-api verify-api web build-web typecheck-web test clean
+.PHONY: setup data cube verify lint-api migrate-api seed-api api build-api typecheck-api verify-api web build-web typecheck-web audit test clean
 
 setup:
 	$(NPM) --prefix $(CUBE_DIR) install
@@ -52,6 +53,9 @@ build-web:
 
 typecheck-web:
 	$(NPM) --prefix $(WEB_DIR) run typecheck
+
+audit:
+	$(NODE) scripts/check-dependencies.mjs
 
 test: verify lint-api typecheck-api verify-api build-web
 

@@ -1,0 +1,54 @@
+{
+  "note": "Accepted high-severity npm advisories for CPM Lite. Only add an entry when no forward fix exists, with the upstream package that pins the vulnerable transitive. Remove the entry when the advisory disappears; scripts/check-dependencies.mjs warns about stale entries. Critical advisories are never accepted.",
+  "reviewed": "2026-11-03",
+  "accepted": [
+    {
+      "workspace": "cube",
+      "package": "@cubejs-backend/shared",
+      "severity": "high",
+      "upstream": "@cubejs-backend/server@1.8.17 pins proxy-agent ^6.5.0 and shelljs ^0.8.5",
+      "reason": "Upstream-pinned proxy/build dependencies. The patched lines are proxy-agent 8.x and shelljs 0.10.x; Cube has not adopted them. The proxy path is only used when Cube is configured with a proxy.",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "workspace": "cube",
+      "package": "basic-ftp",
+      "severity": "high",
+      "upstream": "proxy-agent ^6.5.0 -> get-uri -> basic-ftp",
+      "reason": "FTP proxy path is not used by the DuckDB-backed Cube deployment. No fixed release exists inside the proxy-agent 6.x line.",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "workspace": "cube",
+      "package": "get-uri",
+      "severity": "high",
+      "upstream": "proxy-agent ^6.5.0 -> pac-proxy-agent -> get-uri",
+      "reason": "Same proxy chain as proxy-agent; unused without a configured HTTP/FTP proxy.",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "workspace": "cube",
+      "package": "pac-proxy-agent",
+      "severity": "high",
+      "upstream": "@cubejs-backend/shared pins proxy-agent ^6.5.0",
+      "reason": "Same proxy chain as proxy-agent; patched release is a semver-major bump owned by Cube.",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "workspace": "cube",
+      "package": "proxy-agent",
+      "severity": "high",
+      "upstream": "@cubejs-backend/shared pins proxy-agent ^6.5.0",
+      "reason": "Cube pins the vulnerable 6.x line; the fix is proxy-agent 8.x. Not reachable in the default local/DuckDB deployment, which has no proxy configured.",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "workspace": "cube",
+      "package": "graphql-scalars",
+      "severity": "high",
+      "upstream": "@cubejs-backend/api-gateway pins graphql-scalars ^1.10.0",
+      "reason": "The advisory is a ReDoS in the PhoneNumber scalar. CPM Lite does not expose that scalar, and the fixed 2.0.1 release is a semver-major upgrade owned by Cube.",
+      "reviewBy": "2027-02-01"
+    }
+  ]
+}

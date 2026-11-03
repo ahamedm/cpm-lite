@@ -5,15 +5,15 @@ Thin-layer budgeting, forecasting, scenario modelling and plan-promotion platfor
 
 ## Progress snapshot
 
-Verified on 2026-11-01:
+Verified on 2026-11-03:
 
 | Area | Implemented |
 |---|---|
-| **Semantic layer** | Cube 1.8.16 over DuckDB 2.0; 9,995 governed facts across 6 departments; `budget_vs_actual` view; department row-level policies. `make verify` checks totals, scoping, the joined view and auth failures. |
+| **Semantic layer** | Cube 1.8.17 over DuckDB 2.0; 9,995 governed facts across 6 departments; `budget_vs_actual` view; department row-level policies. `make verify` checks totals, scoping, the joined view and auth failures. |
 | **OLTP + API** | 20-table `orchestrator` schema in `data/cpm_lite_oltp.duckdb`; Fastify 5 + Kysely API for models, scenarios, jobs, rules, submissions/decisions, promotions, plans, audit and reference data. Governed source profiling at `/api/v1/model-sources` and authorized aggregate preview at `/api/v1/model-preview`; preview reads the read-only `data/cpm_lite_preview.duckdb` snapshot. Swagger UI at `/docs`, OpenAPI at `/api/v1/openapi.json`; ETags, idempotency, outbox and worker callback are implemented. `make verify-api` covers the end-to-end workflow and denials. |
 | **UI** | React 19 + Vite task UI covering connection, portfolio, models/model versions, the source-first Model Studio, scenarios/validation/runs, jobs, reviews/decisions, promotion, plans, rules, audit and the Cube-backed variance view. `make build-web` typechecks and builds; the flows were reviewed at 1440 px and 390 px. |
 | **Docs** | PRD, C4 DSL, ADRs 0001–0003, API design notes, Model Studio brief, PRODUCT.md, DESIGN.md, root README and `apps/web/README.md`. |
-| **Checks** | `make test` passes: Cube verifier, OpenAPI lint, API typecheck/end-to-end test, UI production build. |
+| **Checks** | `make test` passes: Cube verifier, OpenAPI lint, API typecheck/end-to-end test, UI production build. `make audit` verifies direct dependency currency and npm advisories. |
 
 Still outstanding: the external scenario worker, Cube refresh worker, Entra ID integration, PostgreSQL migration, Cube Store/pre-aggregations, and the open decisions below.
 
@@ -66,9 +66,10 @@ Node.js 20+ and `unzip` are required. The local setup does not use Docker.
 | `make typecheck-api` | Typecheck the API |
 | `make verify-api` | Run the API end-to-end integration test |
 | `make build-web` | Typecheck and production-build the UI |
+| `make audit` | Check direct dependency currency and npm advisories (network required; not part of `make test`) |
 | `make test` | Cube verify + OpenAPI lint + API typecheck/tests + UI build |
 
-`make verify` checks the semantic layer; `make lint-api` checks the contract; `make verify-api` checks the orchestrator end to end. API documentation is served at `/docs` with the OpenAPI JSON at `/api/v1/openapi.json`. The UI proxies `/api`, `/docs` and `/cubejs-api` through Vite during development.
+`make verify` checks the semantic layer; `make lint-api` checks the contract; `make verify-api` checks the orchestrator end to end. API documentation is served at `/docs` with the OpenAPI JSON at `/api/v1/openapi.json`. The UI proxies `/api`, `/docs` and `/cubejs-api` through Vite during development. `make audit` is the dependency/supply-chain gate; see [Dependencies & supply chain](#dependencies--supply-chain-mandatory).
 
 ## Repository layout
 
@@ -84,6 +85,8 @@ docs/                PRD, ADRs, API review notes, runbooks
 data/                Generated DuckDB files + staging + extensions (gitignored)
 design/              C4 Structurizr DSL
 sample_data/         Synthetic Kaggle workbook (demo Gold data)
+scripts/             Repo-level checks (dependency currency + npm advisories)
+security/            Accepted high-severity npm advisories with reasons and review dates
 ```
 
 Not created yet:
@@ -110,7 +113,7 @@ tests/               Cross-service integration/e2e fixtures
 | **Scenario Jobs** | Exclusive compute per run: base calc → allocation → post-validation → result write-back | Reuse another job's DuckDB instance, temp schema or lock |
 | **dbt (optional)** | Targeted transforms for simple business models | Take over foundational Data Engineering models |
 
-**Implemented slice:** `cube/` runs Cube Core 1.8.16 against `data/cpm_lite.duckdb` (DuckDB 2.0) via `@cubejs-backend/duckdb-driver`. `cube/package.json` overrides `@duckdb/node-api` to `2.0.0-r.1` because the driver pins 1.5.5 and cannot read DuckDB 2.0 storage. The `gold` schema, `budget_vs_actual` view, and department row-level policies are live. See `docs/adr/0001-cube-duckdb-semantic-layer.md`.
+**Implemented slice:** `cube/` runs Cube Core 1.8.17 against `data/cpm_lite.duckdb` (DuckDB 2.0) via `@cubejs-backend/duckdb-driver`. `cube/package.json` overrides `@duckdb/node-api` to `2.0.0-r.1` because the driver pins 1.5.5 and cannot read DuckDB 2.0 storage. The `gold` schema, `budget_vs_actual` view, and department row-level policies are live. See `docs/adr/0001-cube-duckdb-semantic-layer.md`.
 
 The Thin Orchestrator API is implemented in `apps/api` (Fastify 5 + Kysely + DuckDB) and serves Swagger UI at `/docs` and the OpenAPI JSON at `/api/v1/openapi.json`. It covers models, scenarios, jobs, rules, review/decisions, promotion, plans, audit, idempotency, ETags and an internal worker callback. Scenario compute, Cube refresh and job dispatch remain external workers. See `docs/adr/0002-thin-orchestrator-api.md`.
 
@@ -253,9 +256,60 @@ CI must run lint, typecheck, unit and integration tests; no test may depend on t
 - Audit successful and failed access attempts.
 - Keep tokens, secrets and financial payloads out of logs, traces and error responses.
 
+## Dependencies & supply chain (mandatory)
+
+Model memory of package versions is **not** evidence. Every dependency decision must be checked against the npm registry and the advisory database, not against what an assistant, a scaffold or a boilerplate "remembers". On 2026-11-03 the direct dependencies were re-verified against `latest` and the patch/minor drift was closed:
+
+| Workspace | Stack | Verified state |
+|---|---|---|
+| `cube` | Cube Core 1.8.17 (`server` + `duckdb-driver`), DuckDB Node API 2.0.0-r.1 | current; 27 advisories, 0 critical, 6 high accepted in `security/npm-audit-baseline.json` |
+| `apps/api` | Fastify 5.12.8, Kysely 0.28.19, TypeScript 5.9 | current except the deliberate Kysely pin (see Notes) and the TypeScript 7 / `@types/node` 26 majors, which are open decisions |
+| `apps/web` | React 19.3, Vite 8.3, React Router 7.18, TanStack Query 5.105 | current; 0 advisories |
+| `packages/contracts` | Redocly CLI 2.72.1 | current; 0 advisories |
+
+### Required check
+
+Run `make audit` whenever a dependency or lockfile changes, before a release, and at least quarterly. It requires network access and:
+
+1. compares every declared direct dependency in the four workspaces with the npm `latest` dist-tag and reports patch/minor/major drift;
+2. runs `npm audit --package-lock-only` per workspace against the committed lockfile;
+3. fails on critical advisories, high advisories not recorded in `security/npm-audit-baseline.json`, expired exceptions, and any `@cubejs-backend/*` package below 1.0.0.
+
+`make audit` is deliberately **not** part of `make test`, because no test may depend on the public internet. `node scripts/check-dependencies.mjs --offline` runs only the local Cube-version guard.
+
+### Never trust `npm audit fix`
+
+`npm audit fix` picks the nearest version **outside** an advisory range, which is often a downgrade, not a fix. On this lockfile it proposes:
+
+- `@cubejs-backend/server` 1.8.17 → **0.26.13** — a pre-1.0 downgrade of the same 0.2x generation; Cube 0.x cannot read DuckDB 2.0;
+- `@fastify/swagger-ui` 6.1.2 → **2.1.0** — a semver-major downgrade that breaks the API;
+- `graphql-scalars` 1.26.0 → **1.24.0** — a pre-advisory version.
+
+Upgrade the direct package forward with an explicit version (`npm install pkg@version`), run `make test`, and only use `npm audit fix` after inspecting the resulting lockfile diff. **Never run `npm audit fix --force` in this repo.**
+
+### Exceptions
+
+- Critical advisories are never accepted.
+- A high advisory may be accepted only when no forward fix exists, with the upstream pin, why it is not reachable, and a review date no more than 90 days away.
+- Record it in `security/npm-audit-baseline.json`; the check fails when an exception expires and warns when one is no longer needed.
+- Moderate/low findings are reported but do not fail the check; fix them with the next upstream patch or when the advisory becomes high.
+
+### Skills for dependency and security checks
+
+Use these skills instead of ad-hoc judgement:
+
+| Skill | When |
+|---|---|
+| `security-review` | After any dependency, auth, token, query or endpoint change. Reviews the branch diff for injection, authz, secrets, deserialization, path traversal and crypto issues. |
+| `research` | To confirm an advisory, the first fixed version, or whether upstream has adopted it; combines registry/upstream sources with code reading. |
+| `test` | After upgrading dependencies; runs the project suite and works failures to green. |
+| `review` | General correctness review of the dependency or docs change itself. |
+
+`impeccable` is the required review for UI changes, not for dependency checks. Skills are aids; `make audit` and `make test` remain the evidence.
+
 ## Definition of done
 
-A change is done when: the relevant PRD requirement is satisfied; invariants I1–I14 still hold; unit/integration tests cover the behaviour (including negative authorization); docs (PRD/DSL/AGENTS/OpenAPI) are updated if behaviour or structure changed; `make lint-api` passes; lint/typecheck/tests pass; for UI changes the anti-slop section above and its review checklist are complete; no scratch files, secrets or debug output remain.
+A change is done when: the relevant PRD requirement is satisfied; invariants I1–I14 still hold; unit/integration tests cover the behaviour (including negative authorization); docs (PRD/DSL/AGENTS/OpenAPI) are updated if behaviour or structure changed; `make lint-api` passes; lint/typecheck/tests pass; for UI changes the anti-slop section above and its review checklist are complete; dependency changes have a fresh `make audit` run and every new high/critical advisory is fixed or recorded with a review date; no scratch files, secrets or debug output remain.
 
 ## Open decisions — do not silently choose
 
@@ -270,11 +324,12 @@ Record the resolution in an ADR and update this file when decided.
 - **Multi-currency / FX translation:** not specified in the PRD; confirm before modelling currency beyond a single reporting currency.
 - **Scenario result retention and pre-aggregation strategy** in Cube/DuckLake.
 - **Approval thresholds and approver routing** beyond the rule-driven default.
+- **TypeScript 7 / `@types/node` 26:** both are new majors (TypeScript 7 is the native-compiler line). Decide whether to adopt them once `tsx`, Vite and the Kysely/DuckDB typings are verified against them; until then stay on TypeScript 5.9 and `@types/node` 24.
 
 ## Notes
 
 - `make data` builds 10,010 raw rows → 10,000 after exact-duplicate collapse → 9,995 governed facts; 5 rows are quarantined in `gold.rejected_financials` for missing department/category/region. It also writes `data/cpm_lite_preview.duckdb`, the read-only snapshot used by Model Studio preview.
-- Cube's DuckDB driver 1.8.16 pins `@duckdb/node-api@1.5.5`; the `overrides` entry to `2.0.0-r.1` is required to read DuckDB 2.0 files. Re-check on every Cube upgrade and run `make verify`.
+- Cube's DuckDB driver 1.8.17 pins `@duckdb/node-api@1.5.5`; the `overrides` entry to `2.0.0-r.1` is required to read DuckDB 2.0 files. Re-check on every Cube upgrade and run `make verify`.
 - Cube resolves `schemaPath` relative to the process working directory (`path.join(cwd, schemaPath)`), not relative to `cube.js`.
 - `CUBEJS_DEV_MODE=true` disables Cube's security enforcement. `.env.example` sets it to `false`; `make verify` runs with its own secret from a temp directory so a local `.env` cannot weaken the checks.
 - Local runs use `CUBEJS_CACHE_AND_QUEUE_DRIVER=memory`; no Cube Store or pre-aggregations yet.

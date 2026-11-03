@@ -124,7 +124,7 @@ Data-quality decisions:
 
 ## DuckDB 2.0 compatibility
 
-Cube's `@cubejs-backend/duckdb-driver@1.8.16` depends on `@duckdb/node-api@1.5.5`, which cannot read a DuckDB 2.0 storage file (format version 999). `cube/package.json` overrides the Node API to `2.0.0-r.1`; the driver API used by Cube is unchanged. When upgrading Cube, re-check this override and run `make verify`. See `docs/adr/0001-cube-duckdb-semantic-layer.md`.
+Cube's `@cubejs-backend/duckdb-driver@1.8.17` depends on `@duckdb/node-api@1.5.5`, which cannot read a DuckDB 2.0 storage file (format version 999). `cube/package.json` overrides the Node API to `2.0.0-r.1`; the driver API used by Cube is unchanged. When upgrading Cube, re-check this override and run `make verify`. See `docs/adr/0001-cube-duckdb-semantic-layer.md`.
 
 ## Verification
 
