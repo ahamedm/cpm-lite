@@ -248,26 +248,39 @@ export async function archiveModel(
   const { model, latest } = await getModelWithLatest(db, modelId, user);
   assertDepartmentWrite(user, model.department_code);
 
-  const result = await db
-    .updateTable('model')
-    .set({ status: 'archived', updated_at: new Date(), row_version: model.row_version + 1 })
-    .where('model_id', '=', modelId)
-    .where('row_version', '=', expectedVersion)
-    .executeTakeFirst();
-  if (Number(result.numUpdatedRows) === 0) throw preconditionFailed();
+  const updated = await db.transaction().execute(async (trx) => {
+    const result = await trx
+      .updateTable('model')
+      .set({ status: 'archived', updated_at: new Date(), row_version: model.row_version + 1 })
+      .where('model_id', '=', modelId)
+      .where('row_version', '=', expectedVersion)
+      .executeTakeFirst();
+    if (Number(result.numUpdatedRows) === 0) throw preconditionFailed();
 
-  const updated = await db.selectFrom('model').selectAll().where('model_id', '=', modelId).executeTakeFirstOrThrow();
-  await writeAudit(db, {
-    actorSubject: user.subject,
-    actorDepartmentCode: user.departmentCode,
-    action: 'model.archived',
-    entityType: 'model',
-    entityId: modelId,
-    entityVersion: updated.row_version,
-    correlationId: context.correlationId,
-    requestId: context.requestId,
-    before: { status: model.status },
-    after: { status: 'archived' },
+    const row = await trx.selectFrom('model').selectAll().where('model_id', '=', modelId).executeTakeFirstOrThrow();
+    await writeAudit(trx, {
+      actorSubject: user.subject,
+      actorDepartmentCode: user.departmentCode,
+      action: 'model.archived',
+      entityType: 'model',
+      entityId: modelId,
+      entityVersion: row.row_version,
+      correlationId: context.correlationId,
+      requestId: context.requestId,
+      before: { status: model.status },
+      after: { status: 'archived' },
+    });
+
+    // An archived model must leave the semantic layer, so ask the refresh
+    // worker to regenerate the published-model snapshot.
+    await writeOutbox(trx, {
+      eventType: 'model_version.cube_refresh_requested',
+      aggregateType: 'model_version',
+      aggregateId: latest.model_version_id,
+      payload: { model_id: modelId, model_version_id: latest.model_version_id, reason: 'model_archived' },
+    });
+
+    return row;
   });
   return { payload: toModel(updated, latest), rowVersion: updated.row_version };
 }
@@ -559,6 +572,12 @@ export async function publishModelVersion(
         .set({
           status: 'superseded',
           superseded_by_version_id: modelVersionId,
+          ...(previous.cube_refresh_status === 'pending' || previous.cube_refresh_status === 'running'
+            ? {
+                cube_refresh_status: 'failed',
+                cube_refresh_error: `Superseded by version ${version.version_number} before the Cube refresh completed`,
+              }
+            : {}),
           row_version: previous.row_version + 1,
         })
         .where('model_version_id', '=', previous.model_version_id)
@@ -612,4 +631,80 @@ export async function publishModelVersion(
     rowVersion: result.row_version,
     alreadyPublished: false,
   };
+}
+
+/**
+ * Queues another Cube refresh for an already published version. Publishing is
+ * not the only recovery path: a failed refresh must be retryable without
+ * forking a new version. A pending refresh is coalesced.
+ */
+export async function refreshModelVersionCube(
+  db: Kysely<Database>,
+  user: AuthUser,
+  modelVersionId: string,
+  context: RequestContext
+) {
+  const { version, model } = await getModelVersionWithModel(db, modelVersionId, user);
+  assertDepartmentWrite(user, model.department_code);
+  if (version.status !== 'published') {
+    throw conflict('version_not_published', 'Only a published model version can be refreshed in Cube');
+  }
+
+  const queued = await db
+    .selectFrom('outbox_event')
+    .select('outbox_event_id')
+    .where('event_type', '=', 'model_version.cube_refresh_requested')
+    .where('aggregate_id', '=', modelVersionId)
+    .where('status', 'in', ['pending', 'processing'])
+    .executeTakeFirst();
+  if (queued) {
+    return { payload: toModelVersion(version), rowVersion: version.row_version, alreadyQueued: true };
+  }
+
+  const now = new Date();
+  const updated = await db.transaction().execute(async (trx) => {
+    const result = await trx
+      .updateTable('model_version')
+      .set({
+        cube_refresh_status: 'pending',
+        cube_refresh_requested_at: now,
+        cube_refresh_error: null,
+        row_version: version.row_version + 1,
+      })
+      .where('model_version_id', '=', modelVersionId)
+      .where('row_version', '=', version.row_version)
+      .executeTakeFirst();
+    if (Number(result.numUpdatedRows) === 0) throw preconditionFailed();
+
+    await writeOutbox(trx, {
+      eventType: 'model_version.cube_refresh_requested',
+      aggregateType: 'model_version',
+      aggregateId: modelVersionId,
+      payload: {
+        model_id: model.model_id,
+        model_version_id: modelVersionId,
+        reason: 'manual_refresh',
+      },
+    });
+    await writeAudit(trx, {
+      actorSubject: user.subject,
+      actorDepartmentCode: user.departmentCode,
+      action: 'model_version.cube_refresh_requested',
+      entityType: 'model_version',
+      entityId: modelVersionId,
+      entityVersion: version.row_version + 1,
+      correlationId: context.correlationId,
+      requestId: context.requestId,
+      before: { cube_refresh_status: version.cube_refresh_status },
+      after: { cube_refresh_status: 'pending' },
+    });
+
+    return trx
+      .selectFrom('model_version')
+      .selectAll()
+      .where('model_version_id', '=', modelVersionId)
+      .executeTakeFirstOrThrow();
+  });
+
+  return { payload: toModelVersion(updated), rowVersion: updated.row_version, alreadyQueued: false };
 }

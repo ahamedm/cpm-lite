@@ -17,6 +17,7 @@ import { registerWorkflowRoutes } from './routes/workflow.js';
 import { registerRuleRoutes } from './routes/rules.js';
 import { registerReferenceRoutes } from './routes/reference.js';
 import { registerInternalRoutes } from './routes/internal.js';
+import { startCubeRefreshWorker } from './services/cube-refresh.js';
 import type { Database } from './schema.js';
 import type { Kysely } from 'kysely';
 
@@ -142,7 +143,13 @@ export async function buildApp(overrides: Partial<AppConfig> = {}): Promise<Buil
   registerRuleRoutes(app, { db: handle.db, config, analytics });
   registerInternalRoutes(app, { db: handle.db, config, analytics });
 
+  const cubeRefreshWorker = await startCubeRefreshWorker(
+    { db: handle.db, analytics, config },
+    app.log
+  );
+
   app.addHook('onClose', async () => {
+    cubeRefreshWorker.stop();
     analytics.close();
     await handle.close();
   });

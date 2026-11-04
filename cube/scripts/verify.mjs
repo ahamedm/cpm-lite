@@ -4,12 +4,14 @@
  *   1. steward sees every department and totals match DuckDB;
  *   2. a business user sees only their department;
  *   3. a different department is scoped independently;
- *   4. a missing, invalid, or unscoped token is rejected.
+ *   4. a missing, invalid, or unscoped token is rejected;
+ *   5. a published model is loaded from the dynamic schema snapshot and picks
+ *      up a new snapshot without restarting Cube.
  */
 import { createHmac } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -87,6 +89,68 @@ async function load(baseUrl, query, token) {
   return { status: response.status, body };
 }
 
+/**
+ * Writes a generated-schema snapshot in the same layout the API produces
+ * (current.json + versions/<hash>/<file>.yml) so the dynamic repository is
+ * exercised exactly as it is in the running stack.
+ */
+function writeDynamicSchema(schemaDir, schemaVersion, measures) {
+  const versionDir = path.join(schemaDir, 'versions', schemaVersion);
+  mkdirSync(versionDir, { recursive: true });
+  const measureLines = measures
+    .map(
+      (measure) => `      - name: "${measure}"
+        sql: "${measure}"
+        type: "sum"
+        format: "currency"
+        currency: "USD"`
+    )
+    .join('\n');
+  const yaml = `cubes:
+  - name: "verify_dynamic_model"
+    description: "Verification fixture materialised from the model registry"
+    sql_table: "gold.fact_financials"
+    dimensions:
+      - name: "department_code"
+        sql: "department_code"
+        type: "string"
+      - name: "category_code"
+        sql: "category_code"
+        type: "string"
+    measures:
+${measureLines}
+    accessPolicy:
+      - group: "steward"
+        rowLevel:
+          allowAll: true
+      - group: "business_user"
+        rowLevel:
+          filters:
+            - member: "department_code"
+              operator: "equals"
+              values:
+                - "{SECURITY_CONTEXT.department_code}"
+`;
+  writeFileSync(path.join(versionDir, 'verify_dynamic_model.yml'), yaml);
+  const manifest = {
+    schema_version: schemaVersion,
+    format: 'cpm-cube-schema/1',
+    generated_at: new Date().toISOString(),
+    models: [
+      {
+        model_id: 'verify-model',
+        model_code: 'verify_dynamic_model',
+        model_version_id: `verify-model-${schemaVersion}`,
+        version_number: measures.length,
+        cube_name: 'verify_dynamic_model',
+        file_name: 'verify_dynamic_model.yml',
+        measures,
+      },
+    ],
+  };
+  writeFileSync(path.join(schemaDir, 'current.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+}
+
 async function expectedByDepartment() {
   const instance = await DuckDBInstance.create(dbPath, { access_mode: 'READ_ONLY' });
   const connection = await instance.connect();
@@ -143,6 +207,11 @@ async function main() {
     `module.exports = require(${JSON.stringify(path.join(cubeDir, 'cube.js'))});\n`
   );
 
+  // Exercise the dynamic schema path: a generated snapshot must be loaded by
+  // Cube, honour the row-level policy, and be replaced without a restart.
+  const schemaDir = path.join(verifyDir, 'cube-schema');
+  writeDynamicSchema(schemaDir, 'verify-1', ['budget_amount', 'actual_amount']);
+
   const child = spawn(serverBin, [], {
     cwd: verifyDir,
     env: {
@@ -159,6 +228,7 @@ async function main() {
       CUBEJS_SCHEDULED_REFRESH_TIMER: 'false',
       CUBEJS_TELEMETRY: 'false',
       CPM_DUCKDB_PATH: dbPath,
+      CPM_CUBE_SCHEMA_DIR: schemaDir,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -275,6 +345,57 @@ async function main() {
     const unscopedResponse = await load(baseUrl, { measures: ['budget_vs_actual.budget_amount'] }, unscoped);
     assert(unscopedResponse.status === 403, `Unscoped business user should be 403, got ${unscopedResponse.status}`);
 
+    // --- Dynamic schema snapshot -----------------------------------------
+    const metaResponse = await fetch(`${baseUrl}/cubejs-api/v1/meta`, {
+      headers: { authorization: `Bearer ${steward}` },
+    });
+    assert(metaResponse.ok, `Meta request failed: ${metaResponse.status}`);
+    const meta = await metaResponse.json();
+    assert(
+      Array.isArray(meta.cubes) && meta.cubes.some((cube) => cube.name === 'verify_dynamic_model'),
+      `Generated cube missing from meta: ${JSON.stringify((meta.cubes ?? []).map((cube) => cube.name))}`
+    );
+
+    const dynamicSteward = await load(
+      baseUrl,
+      {
+        measures: ['verify_dynamic_model.budget_amount'],
+        dimensions: ['verify_dynamic_model.department_code'],
+        order: { 'verify_dynamic_model.department_code': 'asc' },
+      },
+      steward
+    );
+    assert(dynamicSteward.status === 200, `Generated cube query failed: ${JSON.stringify(dynamicSteward.body)}`);
+    assert(
+      dynamicSteward.body.data.length === 6,
+      `Generated cube should expose 6 departments, saw ${dynamicSteward.body.data.length}`
+    );
+
+    const dynamicFinance = await load(
+      baseUrl,
+      {
+        measures: ['verify_dynamic_model.budget_amount'],
+        dimensions: ['verify_dynamic_model.department_code'],
+      },
+      tokenFor({ department: 'finance' })
+    );
+    assert(dynamicFinance.status === 200, `Scoped generated cube query failed: ${JSON.stringify(dynamicFinance.body)}`);
+    assert(
+      dynamicFinance.body.data.length === 1 &&
+        dynamicFinance.body.data[0]['verify_dynamic_model.department_code'] === 'finance',
+      `Generated cube leaked outside the department scope: ${JSON.stringify(dynamicFinance.body.data)}`
+    );
+
+    // Commit a new snapshot; Cube must recompile without a restart.
+    writeDynamicSchema(schemaDir, 'verify-2', ['budget_amount', 'actual_amount', 'variance_amount']);
+    const reloaded = await load(
+      baseUrl,
+      { measures: ['verify_dynamic_model.variance_amount'], limit: 1 },
+      steward
+    );
+    assert(reloaded.status === 200, `Dynamic schema reload failed: ${JSON.stringify(reloaded.body)}`);
+    assert(reloaded.body.data.length === 1, 'Dynamic schema reload returned no rows');
+
     console.log('Semantic layer verification passed.');
     console.log(
       JSON.stringify(
@@ -287,6 +408,8 @@ async function main() {
           missing_token: noToken.status,
           invalid_token: invalidToken.status,
           unscoped_token: unscopedResponse.status,
+          dynamic_schema: 'ok',
+          dynamic_reload: 'ok',
         },
         null,
         2

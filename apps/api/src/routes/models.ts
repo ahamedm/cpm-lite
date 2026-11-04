@@ -12,6 +12,7 @@ import {
   listModelVersions,
   patchModel,
   publishModelVersion,
+  refreshModelVersionCube,
   updateModelVersion,
   validateModelVersion,
 } from '../services/models.js';
@@ -119,5 +120,16 @@ export function registerModelRoutes(app: FastifyInstance, deps: RouteDeps): void
     if (payload.model_version?.etag) reply.header('ETag', payload.model_version.etag);
     reply.header('Location', `/api/v1/model-versions/${model_version_id}`);
     return reply.code(result.status).send(payload);
+  });
+
+  app.post('/api/v1/model-versions/:model_version_id/refresh', async (request, reply) => {
+    const { model_version_id } = request.params as { model_version_id: string };
+    const result = await refreshModelVersionCube(db, request.user, model_version_id, requestContext(request));
+    if (result.alreadyQueued) reply.header('X-CPM-Refresh', 'already-queued');
+    return sendPayload(reply, result.payload, {
+      status: 202,
+      rowVersion: result.rowVersion,
+      location: `/api/v1/model-versions/${model_version_id}`,
+    });
   });
 }

@@ -64,7 +64,7 @@ draft ──validate──> validated ──publish──> published ──new v
   └──edit───────────────┘ (draft/validated only)
 ```
 
-Publish requires `validated`. Publish is synchronous for the registry row and asynchronous for the Cube refresh (`cube_refresh.status`). A publish never mutates a previously published version.
+Publish requires `validated`. Publish is synchronous for the registry row and asynchronous for the Cube refresh (`cube_refresh.status`). A publish never mutates a previously published version. The refresh consumer renders all published, non-archived model versions into a content-addressed Cube schema snapshot, verifies it against Cube, and records `succeeded` or `failed` (ADR 0004). A failed refresh is recoverable without forking a version: `POST /api/v1/model-versions/{id}/refresh` re-queues it and coalesces with an already pending request.
 
 ### Scenario execution + review
 
@@ -263,12 +263,12 @@ Use a transactional outbox:
 | Event | Produced by | Consumer |
 |---|---|---|
 | `job.dispatch_requested` | Job submission | Scenario job dispatcher (AKS Job / Container Apps Job) |
-| `model_version.cube_refresh_requested` | Model publish | Cube schema refresher |
+| `model_version.cube_refresh_requested` | Model publish and model archive | Cube schema refresher (in-process consumer; ADR 0004) |
 | `promotion.requested` | Promotion endpoint | Promotion worker |
 
 The outbox row is written in the same transaction as the state change. Consumers must be idempotent by `outbox_event_id` and record `status`, `attempts`, `available_at`, `last_error`.
 
-Slice 1 may leave jobs `queued` and Cube refresh `pending`; the API and schema are ready before the workers exist. Do not fake success. `GET /jobs/{id}` and `GET /model-versions/{id}` expose the truthful state.
+The Cube refresh consumer is implemented. It is currently in-process because DuckDB allows a single writer; it can be lifted into a worker service once OLTP is PostgreSQL. Jobs may still remain `queued` until their external worker exists. Do not fake success. `GET /jobs/{id}` and `GET /model-versions/{id}` expose the truthful state: the refresh is `pending` → `running` → `succeeded`/`failed`, and a failure records `cube_refresh.error`.
 
 ---
 

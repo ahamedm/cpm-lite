@@ -63,6 +63,9 @@ test('Thin Orchestrator API end-to-end', async () => {
     maxJobAttempts: 3,
     idempotencyTtlHours: 1,
     corsOrigins: [],
+    cubeRefreshEnabled: false,
+    cubeSchemaStore: 'file',
+    valkeyUrl: null,
   });
   await app.ready();
 

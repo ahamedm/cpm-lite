@@ -8,6 +8,8 @@ data/*.duckdb
 data/*.duckdb.wal
 data/staging/
 data/.duckdb-extensions/
+# Dynamic Cube schema snapshots (regenerated from the model registry)
+data/cube-schema/
 
 # Local environment
 .env

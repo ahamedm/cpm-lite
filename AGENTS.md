@@ -1,21 +1,21 @@
 # AGENTS.md — CPM Lite
 
 Thin-layer budgeting, forecasting, scenario modelling and plan-promotion platform.
-**Status: phase 1.** The Cube Core semantic layer, DuckDB 2.0 gold layer, Thin Orchestrator API and React task UI are working. The external scenario worker, Cube refresh worker and production identity remain.
+**Status: phase 1.** The Cube Core semantic layer (including dynamic schema for published models), DuckDB 2.0 gold layer, Thin Orchestrator API and React task UI are working. The external scenario worker and production identity remain.
 
 ## Progress snapshot
 
-Verified on 2026-11-03:
+Verified on 2026-11-04:
 
 | Area | Implemented |
 |---|---|
-| **Semantic layer** | Cube 1.8.17 over DuckDB 2.0; 9,995 governed facts across 6 departments; `budget_vs_actual` view; department row-level policies. `make verify` checks totals, scoping, the joined view and auth failures. |
+| **Semantic layer** | Cube 1.8.17 over DuckDB 2.0; 9,995 governed facts across 6 departments; `budget_vs_actual` view; department row-level policies; dynamic Cube schema materialised from published model versions by the in-process refresh worker. `make verify` checks totals, scoping, the joined view, auth failures, generated-schema loading and hot reload. |
 | **OLTP + API** | 20-table `orchestrator` schema in `data/cpm_lite_oltp.duckdb`; Fastify 5 + Kysely API for models, scenarios, jobs, rules, submissions/decisions, promotions, plans, audit and reference data. Governed source profiling at `/api/v1/model-sources` and authorized aggregate preview at `/api/v1/model-preview`; preview reads the read-only `data/cpm_lite_preview.duckdb` snapshot. Swagger UI at `/docs`, OpenAPI at `/api/v1/openapi.json`; ETags, idempotency, outbox and worker callback are implemented. `make verify-api` covers the end-to-end workflow and denials. |
 | **UI** | React 19 + Vite task UI covering connection, portfolio, models/model versions, the source-first Model Studio, scenarios/validation/runs, jobs, reviews/decisions, promotion, plans, rules, audit and the Cube-backed variance view. `make build-web` typechecks and builds; the flows were reviewed at 1440 px and 390 px. |
-| **Docs** | PRD, C4 DSL, ADRs 0001–0003, API design notes, Model Studio brief, PRODUCT.md, DESIGN.md, root README and `apps/web/README.md`. |
-| **Checks** | `make test` passes: Cube verifier, OpenAPI lint, API typecheck/end-to-end test, UI production build. `make audit` verifies direct dependency currency and npm advisories. |
+| **Docs** | PRD, C4 DSL, ADRs 0001–0006, API design notes, Model Studio brief, PRODUCT.md, DESIGN.md, root README and `apps/web/README.md`. |
+| **Checks** | `make test` passes: Cube verifier, Cube repository tests, OpenAPI lint, API typecheck/end-to-end test, UI production build. `make audit` verifies direct dependency currency and npm advisories. |
 
-Still outstanding: the external scenario worker, Cube refresh worker, Entra ID integration, PostgreSQL migration, Cube Store/pre-aggregations, and the open decisions below.
+Still outstanding: the external scenario worker, Entra ID integration, PostgreSQL migration, Cube Store/pre-aggregations, and the open decisions below.
 
 ## What this is
 
@@ -56,18 +56,20 @@ Node.js 20+ and `unzip` are required. The local setup does not use Docker.
 | `make setup` | Install Cube, contract, API and UI dependencies |
 | `make data` | Load the workbook and rebuild `data/cpm_lite.duckdb` |
 | `make cube` | Start Cube on `http://localhost:4000` |
-| `make verify` | Start Cube on a free port and run semantic-layer/access checks |
+| `make verify` | Start Cube on a free port and run semantic-layer/access/dynamic-schema checks |
 | `make lint-api` | Lint the Thin Orchestrator OpenAPI contract |
 | `make migrate-api` | Apply forward-only migrations to `data/cpm_lite_oltp.duckdb` |
 | `make seed-api` | Seed reference departments and cost centres |
+| `make promote-cube-schema` | Promote generated models to reviewed static Cube YAML (maintenance window; ADR 0006) |
 | `make api` | Start the API on `http://localhost:8080`; docs at `/docs` |
 | `make web` | Start the React UI on `http://localhost:5173` |
 | `make build-api` | TypeScript build to `apps/api/dist` |
 | `make typecheck-api` | Typecheck the API |
 | `make verify-api` | Run the API end-to-end integration test |
+| `make test-cube` | Run the Cube schema-repository tests (file and Valkey transports) |
 | `make build-web` | Typecheck and production-build the UI |
 | `make audit` | Check direct dependency currency and npm advisories (network required; not part of `make test`) |
-| `make test` | Cube verify + OpenAPI lint + API typecheck/tests + UI build |
+| `make test` | Cube verify + Cube tests + OpenAPI lint + API typecheck/tests + UI build |
 
 `make verify` checks the semantic layer; `make lint-api` checks the contract; `make verify-api` checks the orchestrator end to end. API documentation is served at `/docs` with the OpenAPI JSON at `/api/v1/openapi.json`. The UI proxies `/api`, `/docs` and `/cubejs-api` through Vite during development. `make audit` is the dependency/supply-chain gate; see [Dependencies & supply chain](#dependencies--supply-chain-mandatory).
 
@@ -115,7 +117,7 @@ tests/               Cross-service integration/e2e fixtures
 
 **Implemented slice:** `cube/` runs Cube Core 1.8.17 against `data/cpm_lite.duckdb` (DuckDB 2.0) via `@cubejs-backend/duckdb-driver`. `cube/package.json` overrides `@duckdb/node-api` to `2.0.0-r.1` because the driver pins 1.5.5 and cannot read DuckDB 2.0 storage. The `gold` schema, `budget_vs_actual` view, and department row-level policies are live. See `docs/adr/0001-cube-duckdb-semantic-layer.md`.
 
-The Thin Orchestrator API is implemented in `apps/api` (Fastify 5 + Kysely + DuckDB) and serves Swagger UI at `/docs` and the OpenAPI JSON at `/api/v1/openapi.json`. It covers models, scenarios, jobs, rules, review/decisions, promotion, plans, audit, idempotency, ETags and an internal worker callback. Scenario compute, Cube refresh and job dispatch remain external workers. See `docs/adr/0002-thin-orchestrator-api.md`.
+The Thin Orchestrator API is implemented in `apps/api` (Fastify 5 + Kysely + DuckDB) and serves Swagger UI at `/docs` and the OpenAPI JSON at `/api/v1/openapi.json`. It covers models, scenarios, jobs, rules, review/decisions, promotion, plans, audit, idempotency, ETags and an internal worker callback. The Cube refresh consumer is implemented in-process (DuckDB single writer): it materialises published model versions into a content-addressed Cube schema snapshot, verifies it against Cube, and records `succeeded`/`failed`. Scenario compute and job dispatch remain external workers. See `docs/adr/0002-thin-orchestrator-api.md` and `docs/adr/0004-cube-dynamic-schema-refresh.md`.
 
 The Thin Layer UI is implemented in `apps/web` (React 19 + Vite + TanStack Query) with a custom ledger-style design system. It covers the portfolio overview, models, the source-first Model Studio, scenarios, jobs, reviews/decisions, promotion, plans, rules, audit and the Cube-backed variance view. API/Cube tokens are entered on the Connection screen and kept in session storage. See `apps/web/README.md` and `docs/ui/model-studio.md`.
 
@@ -238,7 +240,8 @@ Scale tests to the change; the default bar for this product is:
 - **Property-based** — allocation conserves the pool within tolerance, respects eligibility/constraints, is deterministic, and handles zero/negative driver bases.
 - **Rule table tests** — scope precedence, effective dating, priority ties, warn vs reject outcomes.
 - **Authorization** — every endpoint and Cube query tested with an authorised user and a cross-department unauthorised user.
-- **Semantic layer** — `make verify` checks steward totals against DuckDB, per-department scoping, the joined view, and 403s for missing/invalid/unscoped tokens. Run it after model, policy, loader or driver changes.
+- **Semantic layer** — `make verify` checks steward totals against DuckDB, per-department scoping, the joined view, 403s for missing/invalid/unscoped tokens, and dynamic generated-schema loading plus hot reload. Run it after model, policy, loader or driver changes.
+- **Cube refresh** — `npm --prefix apps/api test` covers schema rendering, unsafe definitions, verified refresh, rollback with backoff, terminal failure, manual re-queue, the Valkey store and static-YAML promotion; `make test-cube` covers the file and Valkey Cube repositories. Run both after changing the generator, worker, store, promotion or Cube repository.
 - **Job integration** — real DuckDB, exclusive locking, cancellation/SIGTERM, retry attempts, orphan-lock absence, terminal status always written.
 - **Contract** — OpenAPI schema conformance; Cube query contracts. Run `make lint-api` after changing the spec or implementation.
 - **Orchestrator API** — `make verify-api` runs an end-to-end test: model publish → scenario job → internal completion → review → approval → promotion, plus cross-department denials, idempotency, and rule-driven validation failure.
@@ -262,8 +265,8 @@ Model memory of package versions is **not** evidence. Every dependency decision 
 
 | Workspace | Stack | Verified state |
 |---|---|---|
-| `cube` | Cube Core 1.8.17 (`server` + `duckdb-driver`), DuckDB Node API 2.0.0-r.1 | current; 27 advisories, 0 critical, 6 high accepted in `security/npm-audit-baseline.json` |
-| `apps/api` | Fastify 5.12.8, Kysely 0.28.19, TypeScript 5.9 | current except the deliberate Kysely pin (see Notes) and the TypeScript 7 / `@types/node` 26 majors, which are open decisions |
+| `cube` | Cube Core 1.8.17 (`server` + `duckdb-driver`), DuckDB Node API 2.0.0-r.1, ioredis 6.0.0 (optional Valkey schema store) | current; 27 advisories, 0 critical, 6 high accepted in `security/npm-audit-baseline.json` |
+| `apps/api` | Fastify 5.12.8, Kysely 0.28.19, TypeScript 5.9, ioredis 6.0.0 (optional) | current except the deliberate Kysely pin (see Notes) and the TypeScript 7 / `@types/node` 26 majors, which are open decisions |
 | `apps/web` | React 19.3, Vite 8.3, React Router 7.18, TanStack Query 5.105 | current; 0 advisories |
 | `packages/contracts` | Redocly CLI 2.72.1 | current; 0 advisories |
 
@@ -340,7 +343,13 @@ Record the resolution in an ADR and update this file when decided.
 - `apps/api` converts `Date` parameters to ISO strings and BigInt results to numbers with a Kysely plugin; `kysely-duckdb` cannot bind Dates directly.
 - FKs are kept only on immutable reference data. Mutable relationships are service-enforced because DuckDB can reject updates to rows referenced by FKs.
 - API docs: `make api` then open `http://localhost:8080/docs`; the raw spec is at `/api/v1/openapi.json`.
-- API jobs stay `queued` until the external worker calls `POST /internal/v1/jobs/{job_id}/status` with `X-CPM-Service-Token`; Cube refresh stays `pending` until its worker exists.
+- API jobs stay `queued` until the external worker calls `POST /internal/v1/jobs/{job_id}/status` with `X-CPM-Service-Token`.
+- Cube refresh is real as of ADR 0004. Publishing writes a `model_version.cube_refresh_requested` outbox event; the in-process consumer (DuckDB single writer) renders all published, non-archived model versions into `data/cube-schema/versions/<sha256>/`, commits `current.json`, then verifies `/meta` and one `load` per cube before marking `succeeded`. Failures roll the pointer back and retry with backoff; the model version and event end `failed` after `CPM_CUBE_REFRESH_MAX_ATTEMPTS`. Cube reads the snapshot through `cube/model/dynamic-repository.cjs` and recompiles when the hash changes.
+- Cube verification needs `CPM_CUBE_API_SECRET` set to Cube's `CUBEJS_API_SECRET` (local HS256 only). In the default `file` mode the API and Cube must share `CPM_CUBE_SCHEMA_DIR`; locally it defaults to `data/cube-schema` on both sides. Generated schema is gitignored and reproducible from the registry.
+- The schema transport is pluggable (ADR 0005): `CPM_CUBE_SCHEMA_STORE=file` (default, single host) or `valkey` (multi-pod). For Valkey, set the same `CPM_VALKEY_URL` and `CPM_VALKEY_KEY_PREFIX` on the API and Cube; keys are `<prefix>:current`, `<prefix>:versions` and `<prefix>:versions:<hash>:<file>`. Cube caches the pointer for 1s and keeps its last compiled snapshot if Valkey is unavailable; the API writes files first and the pointer last, and rolls back on verification failure. Use `noeviction` or a TTL (`CPM_VALKEY_SCHEMA_TTL_SECONDS`, default 0). Cube Store is not Valkey-backed: cache/queue is `memory` or `cubestore`.
+- Cube boot reads the snapshot directly from the configured store (Valkey or file); it never calls the API, so there is no Cube→API→OLTP boot cycle. Commit and rollback publish on `<prefix>:events`; Cube replicas keep a dedicated subscriber that invalidates the 1s pointer cache. Events are advisory — a missed message converges on the next poll, and a restart re-reads the pointer.
+- Stable models are promoted to reviewed static YAML (ADR 0006) with `make promote-cube-schema` (optional `-- --model <code>`). This reads the committed snapshot, writes `cube/model/cubes/promoted/<cube>.yml` plus `cube/model/promoted-models.json`, commits a dynamic snapshot without those cubes, and publishes the event. The generator excludes promoted codes; a matching published version is marked `succeeded` with `mode: static_yaml`, while a newer version fails the refresh until the YAML and manifest are re-promoted. Promotion is a maintenance operation: stop the API, run the command, review/commit, deploy, restart.
+- `make verify` opens `data/cpm_lite.duckdb`; if a local Cube is already running it holds the DuckDB lock, so point `CPM_DUCKDB_PATH` at a copy, or stop Cube first.
 - The UI is a **product** register: IBM Plex Sans/Mono, cool neutral canvas, ink rail, copper action accent, 1px rules, dense ledger tables, native dialogs, no gradients/card grids/glass. Tokens live in `apps/web/src/styles.css`; keep new screens on the same vocabulary.
 - Vite proxies `/api`, `/docs` and `/cubejs-api`; UI tokens are stored in `sessionStorage` and cleared on sign-out. There is no token endpoint in the API.
 - Model Studio is source-first: `/models/new` uses `/api/v1/model-sources` and `/api/v1/model-preview`; the preview query only accepts allowlisted source columns and aggregations. The API opens `data/cpm_lite_preview.duckdb` read-only because Cube owns the primary DuckDB file; refresh the snapshot with `make data`. Join authoring, templates and a code editor remain follow-up slices.

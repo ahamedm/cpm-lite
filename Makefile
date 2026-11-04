@@ -6,7 +6,7 @@ CONTRACTS_DIR := packages/contracts
 NPM ?= npm
 NODE ?= node
 
-.PHONY: setup data cube verify lint-api migrate-api seed-api api build-api typecheck-api verify-api web build-web typecheck-web audit test clean
+.PHONY: setup data cube verify test-cube lint-api migrate-api seed-api promote-cube-schema api build-api typecheck-api verify-api web build-web typecheck-web audit test clean
 
 setup:
 	$(NPM) --prefix $(CUBE_DIR) install
@@ -24,6 +24,9 @@ verify:
 	@test -f data/cpm_lite.duckdb || (echo "Missing data/cpm_lite.duckdb. Run 'make data' first."; exit 1)
 	$(NPM) --prefix $(CUBE_DIR) run verify
 
+test-cube:
+	$(NPM) --prefix $(CUBE_DIR) test
+
 lint-api:
 	$(NPM) --prefix $(CONTRACTS_DIR) run lint
 
@@ -32,6 +35,9 @@ migrate-api:
 
 seed-api:
 	$(NPM) --prefix $(API_DIR) run seed
+
+promote-cube-schema:
+	$(NPM) --prefix $(API_DIR) run promote-cube-schema
 
 api:
 	$(NPM) --prefix $(API_DIR) run dev
@@ -57,7 +63,7 @@ typecheck-web:
 audit:
 	$(NODE) scripts/check-dependencies.mjs
 
-test: verify lint-api typecheck-api verify-api build-web
+test: verify test-cube lint-api typecheck-api verify-api build-web
 
 clean:
 	rm -f data/cpm_lite.duckdb data/cpm_lite.duckdb.wal data/cpm_lite_preview.duckdb data/cpm_lite_preview.duckdb.wal data/cpm_lite_oltp.duckdb data/cpm_lite_oltp.duckdb.wal

@@ -11,12 +11,14 @@
     "start": "cubejs-server",
     "load": "node scripts/load-data.mjs",
     "verify": "node scripts/verify.mjs",
+    "test": "node --test test/*.test.mjs",
     "token": "node scripts/mint-token.mjs"
   },
   "dependencies": {
     "@cubejs-backend/duckdb-driver": "1.8.17",
     "@cubejs-backend/server": "1.8.17",
     "@duckdb/node-api": "2.0.0-r.1",
+    "ioredis": "6.0.0",
     "jsonwebtoken": "9.0.3"
   },
   "overrides": {

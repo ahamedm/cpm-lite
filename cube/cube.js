@@ -6,12 +6,29 @@ const { CubejsHandlerError } = require('@cubejs-backend/api-gateway/dist/src/cub
 
 const databasePath = process.env.CPM_DUCKDB_PATH || path.resolve(__dirname, '../data/cpm_lite.duckdb');
 const apiSecret = process.env.CUBEJS_API_SECRET;
+const schemaPath = process.env.CUBEJS_SCHEMA_PATH || 'model';
 
 if (!apiSecret) {
   throw new Error(
     'CUBEJS_API_SECRET is required. Copy cube/.env.example to cube/.env and set a local secret.'
   );
 }
+
+/**
+ * Published model versions are materialised by the API as content-addressed
+ * Cube YAML snapshots. This repository serves those alongside the hand-written
+ * static schema; `schemaVersion` changes when a snapshot is committed, which
+ * makes Cube recompile without a restart.
+ */
+const { createDynamicSchemaRepository } = require('./model/dynamic-repository.cjs');
+const dynamicRepository = createDynamicSchemaRepository({
+  staticSchemaPath: schemaPath,
+  store: process.env.CPM_CUBE_SCHEMA_STORE,
+  valkey: {
+    url: process.env.CPM_VALKEY_URL,
+    keyPrefix: process.env.CPM_VALKEY_KEY_PREFIX,
+  },
+});
 
 /**
  * Cube Core semantic layer for CPM Lite.
@@ -31,7 +48,9 @@ module.exports = {
   apiSecret,
   // Cube resolves schemaPath with path.join(process.cwd(), schemaPath), so it
   // must stay relative to the process working directory.
-  schemaPath: process.env.CUBEJS_SCHEMA_PATH || 'model',
+  schemaPath,
+  repositoryFactory: () => dynamicRepository,
+  schemaVersion: () => dynamicRepository.schemaVersion(),
 
   driverFactory: () => new DuckDBDriver({ databasePath }),
 

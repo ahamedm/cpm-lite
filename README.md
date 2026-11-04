@@ -15,7 +15,7 @@ Node.js 20+ and `unzip` are required. The local setup does not use Docker.
 
 ```bash
 cp cube/.env.example cube/.env        # set CUBEJS_API_SECRET
-cp apps/api/.env.example apps/api/.env # set CPM_API_JWT_SECRET and CPM_API_SERVICE_TOKEN
+cp apps/api/.env.example apps/api/.env # set CPM_API_JWT_SECRET, CPM_API_SERVICE_TOKEN and CPM_CUBE_API_SECRET (same as CUBEJS_API_SECRET)
 make setup
 make data
 make migrate-api
@@ -38,8 +38,8 @@ npm --prefix apps/api run token -- --department finance
 npm --prefix cube run token -- --department finance
 ```
 
-`make test` runs the Cube verifier, OpenAPI lint, API end-to-end test, and UI
-production build.
+`make test` runs the Cube verifier and schema-repository tests, OpenAPI lint,
+API end-to-end test, and UI production build.
 
 ## Cube semantic layer
 
@@ -86,6 +86,43 @@ curl -sS http://localhost:4000/cubejs-api/v1/load \
 | `transaction_count` | measure | Governed row count |
 | `transaction_date` | time dimension | Query by day, month, quarter, year |
 | `period` | dimension | `YYYY-MM` |
+| `<model code>` | generated cube | One cube per published model version, materialised at publish/refresh time |
+
+Published models appear in Cube dynamically. The API renders every published
+model version over its governed source into a content-addressed snapshot, and
+Cube loads it through a custom repository; the schema version changes when the
+snapshot changes, so no restart is needed. Generated cubes carry the same
+department row-level policy as `financials`. See
+`docs/adr/0004-cube-dynamic-schema-refresh.md`.
+
+The snapshot transport is selectable:
+
+- `CPM_CUBE_SCHEMA_STORE=file` (default) — `data/cube-schema` on a shared host.
+- `CPM_CUBE_SCHEMA_STORE=valkey` — versioned keys plus an atomic pointer, for
+  multi-pod deployments; set `CPM_VALKEY_URL` and `CPM_VALKEY_KEY_PREFIX` on both
+  the API and Cube. Cube keeps its last compiled schema if Valkey is unavailable.
+  See `docs/adr/0005-valkey-schema-store.md`.
+
+Valkey is a schema transport only: Cube's cache/queue driver is `memory` or
+Cube Store, and Cube Store is not Redis/Valkey-backed.
+
+On boot Cube reads the snapshot directly from the configured store. When a
+snapshot is committed or rolled back, the API publishes an event on
+`<prefix>:events`; every Cube replica invalidates its pointer cache (with the
+one-second poll as a fallback), so all instances converge without a restart.
+
+Stable models can be promoted to reviewed static YAML:
+
+```bash
+make promote-cube-schema                       # all generated models
+make promote-cube-schema -- --model <code>     # one model
+```
+
+This writes `cube/model/cubes/promoted/<cube>.yml` and updates
+`cube/model/promoted-models.json`, then removes those cubes from the dynamic
+snapshot. Commit both files, deploy, and restart. Publishing a new version of a
+promoted model fails the refresh until the YAML is re-promoted. See
+`docs/adr/0006-promote-dynamic-schema-to-static-yaml.md`.
 
 DuckDB `DECIMAL` measures are serialized by Cube's DuckDB driver as strings (`"132834178"`) so cents are not lost. Parse them with a decimal library; do not use `parseFloat`. Percentages are fractions (`0.15` means 15%).
 
@@ -183,7 +220,7 @@ Implementation notes:
 - Run one API replica while DuckDB is the OLTP store.
 - Kysely is pinned to 0.28.19; a query plugin converts `Date` values to ISO strings and BigInt results to numbers because of `kysely-duckdb` limitations.
 - FKs are kept on immutable reference data; mutable aggregate links are checked by the service because DuckDB can reject updates to rows still referenced by FKs.
-- Jobs remain `queued` and Cube refresh remains `pending` until their external workers consume the outbox. The API never fakes completion.
+- Jobs remain `queued` until the external scenario worker consumes the outbox; the API never fakes completion. Cube refresh is implemented: publish/archive enqueues a refresh, the in-process consumer writes and verifies the dynamic snapshot, and the model version reports `succeeded` or `failed` with an error. It needs `CPM_CUBE_API_SECRET` (local Cube secret) and `CPM_CUBE_URL`; see `docs/adr/0004-cube-dynamic-schema-refresh.md`.
 
 Run all checks:
 

@@ -621,6 +621,40 @@ paths:
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
 
+  /api/v1/model-versions/{model_version_id}/refresh:
+    parameters:
+      - $ref: '#/components/parameters/ModelVersionId'
+    post:
+      tags: [Models]
+      operationId: refreshModelVersionCube
+      summary: Queue another Cube refresh for a published model version
+      description: >
+        Recovery path for a failed refresh. A pending refresh is coalesced, so
+        repeated calls are safe. Publishing is not required and no new version
+        is created.
+      x-implementation-slice: 1
+      x-required-roles: [business_user, steward, data_engineer, admin]
+      responses:
+        '202':
+          description: Refresh queued; the Cube refresh is asynchronous.
+          headers:
+            Location:
+              $ref: '#/components/headers/Location'
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelVersion'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
   /api/v1/scenarios:
     get:
       tags: [Scenarios]
