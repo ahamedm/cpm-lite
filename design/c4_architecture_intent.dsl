@@ -19,7 +19,7 @@ workspace "EPM / CPM Platform" "Budgeting, Forecasting & Scenario Modelling Plat
                 tags "UI"
             }
 
-            api = container "Thin Layer API & Orchestration" "Governance, model registry, workflow engine, job submission, promotion logic, rule loading and pre-validation" "Node.js / Python / .NET" {
+            api = container "Thin Layer API & Orchestration" "Governance, model registry, workflow engine, job submission, promotion logic, rule loading, pre-validation and the Cube schema refresh consumer" "Node.js / Python / .NET" {
                 tags "API"
             }
 
@@ -30,8 +30,12 @@ workspace "EPM / CPM Platform" "Budgeting, Forecasting & Scenario Modelling Plat
                 ruleEngine = component "Rule Evaluation Engine" "Lightweight evaluator invoked by API and Scenario Jobs" "Python / Node"
             }
 
-            cube = container "Semantic Model Layer (Cube Core)" "Governed semantic layer, metrics, dimensions, access control and query entry point" "Cube Core" {
+            cube = container "Semantic Model Layer (Cube Core)" "Governed semantic layer, metrics, dimensions, access control and query entry point. Loads dynamic model schema from the shared cache at boot and reloads on refresh events; promoted models are served from reviewed static YAML." "Cube Core" {
                 tags "Semantic"
+            }
+
+            valkey = container "Schema Snapshot Cache (Valkey)" "Content-addressed Cube schema snapshots (manifest + generated YAML), promoted-model exclusions and refresh events shared by every API and Cube replica" "Valkey 9 / Azure Cache for Redis (RESP)" {
+                tags "Infrastructure"
             }
 
             olap = container "OLAP Engine (DuckDB)" "Columnar analytical engine for heavy aggregations, driver calculations and scenario compute" "DuckDB + DuckLake" {
@@ -71,6 +75,7 @@ workspace "EPM / CPM Platform" "Budgeting, Forecasting & Scenario Modelling Plat
         businessUser -> ui "Uses"
         steward -> ui "Uses"
         dataEngineer -> ui "Uses (advanced) + dbt"
+        dataEngineer -> cube "Promotes stable generated models to reviewed static YAML (make promote-cube-schema); changes ship by PR and deploy"
 
         ui -> api "API calls (models, scenarios, jobs, workflow, rules, allocation)"
 
@@ -81,7 +86,13 @@ workspace "EPM / CPM Platform" "Budgeting, Forecasting & Scenario Modelling Plat
         rules -> api "Returns validation results and rule sets for job payload"
 
         api -> jobs "Submits scenario job payloads (includes chosen Allocation Strategy + applicable rule set / rule IDs)"
-        api -> cube "Triggers schema refresh / dynamic model registration when needed"
+
+        # Dynamic schema refresh hooks: API publishes a content-addressed snapshot;
+        # every Cube replica reads it on boot and reloads on the refresh event.
+        api -> valkey "Publishes the schema manifest, generated YAML and commit/rollback refresh events"
+        cube -> valkey "Reads the schema pointer and generated YAML on boot; subscribes to refresh events"
+        api -> cube "Verifies the committed snapshot (/meta + one load per cube) before reporting the refresh succeeded"
+
         api -> dbt "Triggers targeted simple model runs (optional)"
 
         cube -> olap "Queries analytical data & scenario results (including allocated measures)"
@@ -116,6 +127,7 @@ workspace "EPM / CPM Platform" "Budgeting, Forecasting & Scenario Modelling Plat
                         tags "AKS"
 
                         deploymentNode "Node Pool - System" {
+                            description "UI, rules, API and Cube. API is a single writer while DuckDB is the OLTP store; Cube replicas are stateless and converge on the shared schema version."
                             containerInstance ui
                             containerInstance api
                             containerInstance cube
@@ -136,6 +148,11 @@ workspace "EPM / CPM Platform" "Budgeting, Forecasting & Scenario Modelling Plat
                     deploymentNode "Azure Database for PostgreSQL - Flexible Server" {
                         description "Primary OLTP / Durable Store (catalog, metadata, workflow, business rules, allocation rules, promoted plans)"
                         containerInstance oltp
+                    }
+
+                    deploymentNode "Azure Cache for Redis (Valkey-compatible)" {
+                        description "Shared schema snapshot cache: dynamic Cube YAML, promoted-model exclusions and refresh events for all API and Cube replicas"
+                        containerInstance valkey
                     }
 
                     deploymentNode "Azure Data Lake Storage Gen2" {
@@ -238,6 +255,10 @@ workspace "EPM / CPM Platform" "Budgeting, Forecasting & Scenario Modelling Plat
             }
             element "dbt" {
                 background #ff69b4
+                color #ffffff
+            }
+            element "Infrastructure" {
+                background #607d8b
                 color #ffffff
             }
         }

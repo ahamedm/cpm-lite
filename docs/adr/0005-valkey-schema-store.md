@@ -98,8 +98,7 @@ implement the repository ourselves.
 - A Valkey outage degrades a warm Cube replica to its last compiled schema;
   a cold replica serves static cubes and logs a throttled warning. The API
   records a failed refresh and retries.
-- The C4 deployment view should add the Valkey service when a target
-  environment adopts it; no container boundary changes otherwise.
+- The C4 deployment view includes the Valkey container, the API→Valkey publish and Cube→Valkey read/subscribe relationships, and the Azure Cache node; no other container boundaries change.
 - Events are advisory: a replica that misses one converges on the one-second
   pointer poll, and a reboot reads the pointer directly from Valkey.
 - Dependency policy: `ioredis` was added at the registry's current version
