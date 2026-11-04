@@ -124,6 +124,13 @@ snapshot. Commit both files, deploy, and restart. Publishing a new version of a
 promoted model fails the refresh until the YAML is re-promoted. See
 `docs/adr/0006-promote-dynamic-schema-to-static-yaml.md`.
 
+Derived/calculated columns and effective-dated reference-model joins (for
+example manpower × grade rate) are not implemented. The proposal is in
+`docs/adr/0007-derived-columns-and-reference-model-joins.md` (Proposed) with a
+detailed design note in
+`docs/design/derived-columns-and-reference-model-joins.md` (Draft); both are for
+offline review.
+
 DuckDB `DECIMAL` measures are serialized by Cube's DuckDB driver as strings (`"132834178"`) so cents are not lost. Parse them with a decimal library; do not use `parseFloat`. Percentages are fractions (`0.15` means 15%).
 
 Access policy:
@@ -285,6 +292,7 @@ db/migrations/               Forward-only OLTP migrations
 db/seeds/                    Synthetic department/cost-centre reference data
 docs/api/                    API design/review notes
 docs/ui/                     Model Studio product/UX brief
+docs/design/                 Proposed design notes (Draft)
 docs/adr/                    Architecture decision records
 PRODUCT.md                   Product truth and user/job context
 DESIGN.md                    Durable visual system and UI guardrails

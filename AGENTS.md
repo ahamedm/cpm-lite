@@ -12,7 +12,7 @@ Verified on 2026-11-04:
 | **Semantic layer** | Cube 1.8.17 over DuckDB 2.0; 9,995 governed facts across 6 departments; `budget_vs_actual` view; department row-level policies; dynamic Cube schema materialised from published model versions by the in-process refresh worker. `make verify` checks totals, scoping, the joined view, auth failures, generated-schema loading and hot reload. |
 | **OLTP + API** | 20-table `orchestrator` schema in `data/cpm_lite_oltp.duckdb`; Fastify 5 + Kysely API for models, scenarios, jobs, rules, submissions/decisions, promotions, plans, audit and reference data. Governed source profiling at `/api/v1/model-sources` and authorized aggregate preview at `/api/v1/model-preview`; preview reads the read-only `data/cpm_lite_preview.duckdb` snapshot. Swagger UI at `/docs`, OpenAPI at `/api/v1/openapi.json`; ETags, idempotency, outbox and worker callback are implemented. `make verify-api` covers the end-to-end workflow and denials. |
 | **UI** | React 19 + Vite task UI covering connection, portfolio, models/model versions, the source-first Model Studio, scenarios/validation/runs, jobs, reviews/decisions, promotion, plans, rules, audit and the Cube-backed variance view. `make build-web` typechecks and builds; the flows were reviewed at 1440 px and 390 px. |
-| **Docs** | PRD, C4 DSL, ADRs 0001–0006, API design notes, Model Studio brief, PRODUCT.md, DESIGN.md, root README and `apps/web/README.md`. |
+| **Docs** | PRD, C4 DSL, ADRs 0001–0006, ADR 0007 (Proposed) with a Draft design note, API design notes, Model Studio brief, PRODUCT.md, DESIGN.md, root README and `apps/web/README.md`. |
 | **Checks** | `make test` passes: Cube verifier, Cube repository tests, OpenAPI lint, API typecheck/end-to-end test, UI production build. `make audit` verifies direct dependency currency and npm advisories. |
 
 Still outstanding: the external scenario worker, Entra ID integration, PostgreSQL migration, Cube Store/pre-aggregations, and the open decisions below.
@@ -83,7 +83,7 @@ apps/web/            React + Vite task UI: portfolio, models, scenarios, jobs, r
 cube/                Cube Core project: config, cubes, view, loader, verifier, token tool
 packages/contracts/  OpenAPI contract, schemas and Redocly lint
 db/                  Forward-only OLTP migrations and synthetic reference seeds
-docs/                PRD, ADRs, API review notes, runbooks
+docs/                PRD, ADRs, design notes, API review notes, runbooks
 data/                Generated DuckDB files + staging + extensions (gitignored)
 design/              C4 Structurizr DSL
 sample_data/         Synthetic Kaggle workbook (demo Gold data)
