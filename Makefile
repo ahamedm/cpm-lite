@@ -39,6 +39,9 @@ seed-api:
 promote-cube-schema:
 	$(NPM) --prefix $(API_DIR) run promote-cube-schema
 
+backfill-semantic:
+	$(NPM) --prefix $(API_DIR) run backfill-semantic
+
 api:
 	$(NPM) --prefix $(API_DIR) run dev
 

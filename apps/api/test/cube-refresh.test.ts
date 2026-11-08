@@ -12,6 +12,8 @@ import { writeOutbox } from '../src/audit.js';
 import { applyMigrations, applySeeds } from '../src/migrate.js';
 import { processCubeRefreshOnce } from '../src/services/cube-refresh.js';
 import { refreshModelVersionCube } from '../src/services/models.js';
+import { semanticModelFromDefinition } from '../src/semantic/from-definition.js';
+import { writeSemanticModel } from '../src/semantic/repository.js';
 import type { AuthUser } from '../src/auth.js';
 import {
   ValkeyCubeSchemaStore,
@@ -271,6 +273,59 @@ test('refresh commits a verified snapshot and marks the model version succeeded'
       .where('action', '=', 'model_version.cube_refresh_succeeded')
       .executeTakeFirstOrThrow();
     assert.equal(audit.entity_id, version.model_version_id);
+  } finally {
+    await handle.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('refresh reads normalized rows when the legacy definition is empty', async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'cpm-cube-refresh-'));
+  const dbPath = path.join(dir, 'oltp.duckdb');
+  const schemaDir = path.join(dir, 'cube-schema');
+  await applyMigrations(dbPath);
+  await applySeeds(dbPath);
+  const handle = await seedPublishedModel(dbPath);
+
+  try {
+    const semantic = semanticModelFromDefinition(DEFINITION, {
+      code: model.code,
+      name: model.name,
+      description: model.description,
+      departmentCode: model.department_code,
+    });
+    await handle.db
+      .transaction()
+      .execute((trx) => writeSemanticModel(trx, version.model_version_id, semantic));
+    // Prove the compiler does not depend on the compatibility JSON.
+    await handle.db
+      .updateTable('model_version')
+      .set({ definition: '{}' })
+      .where('model_version_id', '=', version.model_version_id)
+      .execute();
+
+    const result = await processCubeRefreshOnce({
+      db: handle.db,
+      analytics: analyticsStub(),
+      config: tempConfig(schemaDir),
+      verify: async () => undefined,
+    });
+
+    assert.equal(result.processed, true);
+    assert.equal(result.error, undefined);
+    const generatedFile = path.join(
+      schemaDir,
+      'versions',
+      result.schemaVersion as string,
+      'fy2026_department_budget.yml'
+    );
+    assert.ok(existsSync(generatedFile));
+    const content = readFileSync(generatedFile, 'utf8');
+    assert.match(content, /sql_table: "gold\.fact_financials"/);
+    assert.match(content, /member: "department_code"/);
+
+    const row = await readVersion(handle, version.model_version_id);
+    assert.equal(row.cube_refresh_status, 'succeeded');
   } finally {
     await handle.close();
     rmSync(dir, { recursive: true, force: true });

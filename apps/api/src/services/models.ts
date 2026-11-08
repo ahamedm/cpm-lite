@@ -3,15 +3,21 @@ import type { AuthUser } from '../auth.js';
 import { assertDepartmentWrite, canReadDepartment } from '../auth.js';
 import type {
   ModelCreateRequest,
+  ModelDefinition,
   ModelUpdateRequest,
   ModelVersionCreateRequest,
   ModelVersionUpdateRequest,
 } from '../contracts.js';
 import { conflict, forbidden, notFound, preconditionFailed, unprocessable } from '../errors.js';
-import { pageInfo, parseLimit, parseOffsetCursor, slugify, uuid } from '../http.js';
+import { pageInfo, parseLimit, parseOffsetCursor, safeJson, slugify, uuid } from '../http.js';
 import type { Database } from '../schema.js';
 import { toModel, toModelVersion, toModelVersionSummary } from '../serializers.js';
 import { writeAudit, writeOutbox } from '../audit.js';
+import { semanticModelHash } from '../semantic/canonical.js';
+import { semanticModelFromDefinition } from '../semantic/from-definition.js';
+import { loadSemanticModel, writeSemanticModel } from '../semantic/repository.js';
+import { SEMANTIC_SCHEMA_VERSION } from '../semantic/types.js';
+import { validateSemanticModel } from '../semantic/validate.js';
 import {
   getModelWithLatest,
   getModelVersionWithModel,
@@ -101,6 +107,13 @@ export async function createModel(
   const now = new Date();
   const modelId = uuid();
   const versionId = uuid();
+  const semantic = semanticModelFromDefinition(body.definition, {
+    code,
+    name: body.name,
+    description: body.description ?? null,
+    departmentCode,
+  });
+  const semanticHash = semanticModelHash(semantic);
 
   const result = await db.transaction().execute(async (trx) => {
     await trx
@@ -140,8 +153,11 @@ export async function createModel(
         published_at: null,
         superseded_by_version_id: null,
         row_version: 1,
+        semantic_schema_version: SEMANTIC_SCHEMA_VERSION,
+        semantic_hash: semanticHash,
       })
       .execute();
+    await writeSemanticModel(trx, versionId, semantic);
 
     await writeAudit(trx, {
       actorSubject: user.subject,
@@ -345,6 +361,13 @@ export async function createModelVersion(
   const nextVersion = (latest?.version_number ?? 0) + 1;
   const versionId = uuid();
   const now = new Date();
+  const semantic = semanticModelFromDefinition(body.definition, {
+    code: model.code,
+    name: model.name,
+    description: model.description,
+    departmentCode: model.department_code,
+  });
+  const semanticHash = semanticModelHash(semantic);
 
   await db.transaction().execute(async (trx) => {
     await trx
@@ -366,8 +389,11 @@ export async function createModelVersion(
         published_at: null,
         superseded_by_version_id: null,
         row_version: 1,
+        semantic_schema_version: SEMANTIC_SCHEMA_VERSION,
+        semantic_hash: semanticHash,
       })
       .execute();
+    await writeSemanticModel(trx, versionId, semantic);
     await writeAudit(trx, {
       actorSubject: user.subject,
       actorDepartmentCode: user.departmentCode,
@@ -408,24 +434,38 @@ export async function updateModelVersion(
     throw conflict('version_immutable', 'Only draft versions can be edited');
   }
 
-  const result = await db
-    .updateTable('model_version')
-    .set({
-      definition: JSON.stringify(body.definition),
-      status: 'draft',
-      validation_report: null,
-      row_version: version.row_version + 1,
-    })
-    .where('model_version_id', '=', modelVersionId)
-    .where('row_version', '=', expectedVersion)
-    .executeTakeFirst();
-  if (Number(result.numUpdatedRows) === 0) throw preconditionFailed();
+  const semantic = semanticModelFromDefinition(body.definition, {
+    code: model.code,
+    name: model.name,
+    description: model.description,
+    departmentCode: model.department_code,
+  });
+  const semanticHash = semanticModelHash(semantic);
 
-  const updated = await db
-    .selectFrom('model_version')
-    .selectAll()
-    .where('model_version_id', '=', modelVersionId)
-    .executeTakeFirstOrThrow();
+  const updated = await db.transaction().execute(async (trx) => {
+    const result = await trx
+      .updateTable('model_version')
+      .set({
+        definition: JSON.stringify(body.definition),
+        status: 'draft',
+        validation_report: null,
+        row_version: version.row_version + 1,
+        semantic_schema_version: SEMANTIC_SCHEMA_VERSION,
+        semantic_hash: semanticHash,
+      })
+      .where('model_version_id', '=', modelVersionId)
+      .where('row_version', '=', expectedVersion)
+      .executeTakeFirst();
+    if (Number(result.numUpdatedRows) === 0) throw preconditionFailed();
+
+    await writeSemanticModel(trx, modelVersionId, semantic);
+    return trx
+      .selectFrom('model_version')
+      .selectAll()
+      .where('model_version_id', '=', modelVersionId)
+      .executeTakeFirstOrThrow();
+  });
+
   await writeAudit(db, {
     actorSubject: user.subject,
     actorDepartmentCode: user.departmentCode,
@@ -441,59 +481,6 @@ export async function updateModelVersion(
   return { payload: toModelVersion(updated), rowVersion: updated.row_version };
 }
 
-function validateModelDefinition(definition: Record<string, any>) {
-  const issues: Array<{ severity: 'error'; path: string; code: string; message: string }> = [];
-  const dimensions = Array.isArray(definition.dimensions) ? definition.dimensions : [];
-  const measures = Array.isArray(definition.measures) ? definition.measures : [];
-  const joins = Array.isArray(definition.joins) ? definition.joins : [];
-
-  if (dimensions.length === 0) {
-    issues.push({ severity: 'error', path: '/dimensions', code: 'dimension_required', message: 'At least one dimension is required' });
-  }
-  if (measures.length === 0) {
-    issues.push({ severity: 'error', path: '/measures', code: 'measure_required', message: 'At least one measure is required' });
-  }
-
-  const dimensionCodes = new Set<string>();
-  for (const [index, dimension] of dimensions.entries()) {
-    const code = dimension?.code;
-    if (typeof code === 'string') {
-      if (dimensionCodes.has(code)) {
-        issues.push({ severity: 'error', path: `/dimensions/${index}/code`, code: 'duplicate_dimension', message: `Duplicate dimension code ${code}` });
-      }
-      dimensionCodes.add(code);
-    }
-  }
-
-  const measureCodes = new Set<string>();
-  for (const [index, measure] of measures.entries()) {
-    const code = measure?.code;
-    if (typeof code === 'string') {
-      if (measureCodes.has(code)) {
-        issues.push({ severity: 'error', path: `/measures/${index}/code`, code: 'duplicate_measure', message: `Duplicate measure code ${code}` });
-      }
-      measureCodes.add(code);
-    }
-  }
-
-  for (const [index, join] of joins.entries()) {
-    if (!dimensionCodes.has(join?.source_member_code) || !dimensionCodes.has(join?.target_member_code)) {
-      issues.push({
-        severity: 'error',
-        path: `/joins/${index}`,
-        code: 'join_member_unknown',
-        message: 'Join source/target members must exist as dimensions in this model',
-      });
-    }
-  }
-
-  return {
-    valid: issues.length === 0,
-    validated_at: new Date().toISOString(),
-    issues,
-  };
-}
-
 export async function validateModelVersion(
   db: Kysely<Database>,
   user: AuthUser,
@@ -506,8 +493,22 @@ export async function validateModelVersion(
     throw conflict('version_immutable', 'Published versions cannot be revalidated');
   }
 
-  const definition = JSON.parse(version.definition) as Record<string, any>;
-  const report = validateModelDefinition(definition);
+  const semantic =
+    (await loadSemanticModel(db, modelVersionId)) ??
+    semanticModelFromDefinition(
+      safeJson<ModelDefinition>(version.definition, {
+        schema_version: '1.0',
+        dimensions: [],
+        measures: [],
+      }),
+      {
+        code: model.code,
+        name: model.name,
+        description: model.description,
+        departmentCode: model.department_code,
+      }
+    );
+  const report = validateSemanticModel(semantic);
   const nextStatus = report.valid ? 'validated' : 'draft';
 
   await db

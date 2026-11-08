@@ -53,6 +53,61 @@ export interface ModelVersionTable {
   published_at: NullableTimestamp;
   superseded_by_version_id: string | null;
   row_version: Generated<number>;
+  // ADR 0008: neutral model metadata. Normalized children live in semantic_*.
+  semantic_schema_version: Generated<string | null>;
+  semantic_hash: Generated<string | null>;
+}
+
+export interface SemanticDatasetTable {
+  model_version_id: string;
+  dataset_code: string;
+  source_id: string;
+  primary_key: string;
+  ordinal: number;
+}
+
+export interface SemanticFieldTable {
+  model_version_id: string;
+  dataset_code: string;
+  field_code: string;
+  label: string;
+  datatype: string;
+  expression: string;
+  is_time: boolean;
+  description: string | null;
+  ordinal: number;
+}
+
+export interface SemanticMetricTable {
+  model_version_id: string;
+  metric_code: string;
+  label: string;
+  dataset_code: string;
+  aggregation: string;
+  expression: string | null;
+  format: string;
+  currency_code: string | null;
+  description: string | null;
+  ordinal: number;
+}
+
+export interface SemanticRelationshipTable {
+  model_version_id: string;
+  relationship_code: string;
+  cardinality: string;
+  source_dataset: string;
+  source_fields: string;
+  target_dataset: string;
+  target_fields: string;
+  pinned_model_version_id: string | null;
+  description: string | null;
+  ordinal: number;
+}
+
+export interface SemanticAccessPolicyTable {
+  model_version_id: string;
+  policy_code: string;
+  row_level_field: string;
 }
 
 export interface PlanTable {
@@ -277,6 +332,11 @@ export interface Database {
   cost_centre: CostCentreTable;
   model: ModelTable;
   model_version: ModelVersionTable;
+  semantic_dataset: SemanticDatasetTable;
+  semantic_field: SemanticFieldTable;
+  semantic_metric: SemanticMetricTable;
+  semantic_relationship: SemanticRelationshipTable;
+  semantic_access_policy: SemanticAccessPolicyTable;
   plan: PlanTable;
   plan_version: PlanVersionTable;
   scenario: ScenarioTable;

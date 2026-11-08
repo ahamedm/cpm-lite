@@ -1,18 +1,26 @@
 /**
- * Generates Cube Core schema for published model versions.
+ * Cube Core target compiler for the canonical semantic model (ADR 0008).
  *
- * The generated document is the only bridge between the model registry and
- * Cube Core: it is written as immutable YAML into the dynamic schema snapshot
- * (see `snapshot.ts`) and loaded by `cube/model/dynamic-repository.cjs`.
+ * The generated document is a lowering of the neutral model, not the registry.
+ * It is written as immutable YAML into the dynamic schema snapshot (see
+ * `snapshot.ts`) and loaded by `cube/model/dynamic-repository.cjs`.
  *
  * Safety rules:
  * - cube names and member names are identifiers (no SQL, no YAML tricks);
  * - expressions must be plain columns of the governed source;
  * - every generated cube carries the department row-level access policy.
  *
- * Invariant I5: no thresholds, approvers or allocation values are emitted
- * here. This module only translates registry data into Cube members.
+ * Invariant I5: no thresholds, approvers or allocation values are emitted here.
  */
+
+import {
+  SEMANTIC_AGGREGATIONS,
+  SEMANTIC_FORMATS,
+  SOURCE_ID,
+  IDENTIFIER,
+} from '../semantic/constants.js';
+import { semanticModelFromDefinition } from '../semantic/from-definition.js';
+import type { SemanticModel } from '../semantic/types.js';
 
 export interface GeneratedCube {
   model_id: string;
@@ -46,6 +54,8 @@ export interface CubeGenerationInput {
     source_id: string;
     columns: string[];
   };
+  /** Canonical model; omitted callers are converted from the legacy document. */
+  semantic?: SemanticModel;
 }
 
 /** Cube names already taken by the hand-written semantic layer. */
@@ -58,8 +68,6 @@ export const RESERVED_CUBE_NAMES = new Set([
 ]);
 
 const CUBE_NAME = /^[a-z_][a-z0-9_]{0,63}$/;
-const IDENTIFIER = /^[a-z_][a-z0-9_]{0,63}$/;
-const SOURCE_ID = /^[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*$/;
 
 const DIMENSION_TYPES: Record<string, string> = {
   string: 'string',
@@ -78,8 +86,6 @@ const AGGREGATION_TYPES: Record<string, string> = {
   count_distinct: 'countDistinct',
 };
 
-const MEASURE_FORMATS = new Set(['currency', 'percent', 'number']);
-
 export class CubeSchemaError extends Error {
   constructor(message: string) {
     super(message);
@@ -94,37 +100,6 @@ export class CubeSchemaError extends Error {
  */
 const DEPARTMENT_SCOPE_COLUMN = 'department_code';
 
-function resolveAccessMember(
-  requested: string,
-  dimensions: Array<Record<string, unknown>>,
-  modelCode: string
-): string {
-  const dimension =
-    dimensions.find((candidate) => candidate.code === requested) ??
-    dimensions.find((candidate) => candidate.expression === requested);
-  if (!dimension) {
-    throw new CubeSchemaError(
-      `Access field ${JSON.stringify(requested)} must be a dimension of model ${modelCode}`
-    );
-  }
-  if (dimension.expression !== DEPARTMENT_SCOPE_COLUMN) {
-    throw new CubeSchemaError(
-      `Access dimension ${JSON.stringify(dimension.code)} of model ${modelCode} must read the governed ${DEPARTMENT_SCOPE_COLUMN} column`
-    );
-  }
-  return String(dimension.code);
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
-}
-
-function asArray(value: unknown): Array<Record<string, unknown>> {
-  return Array.isArray(value) ? value.map(asRecord) : [];
-}
-
 function requiredString(value: unknown, path: string): string {
   if (typeof value !== 'string' || value.length === 0) {
     throw new CubeSchemaError(`${path} must be a non-empty string`);
@@ -136,20 +111,52 @@ function quote(value: string): string {
   return JSON.stringify(value);
 }
 
+function requiredColumn(value: unknown, path: string, available: Set<string>): string {
+  const expression = requiredString(value, path);
+  if (!IDENTIFIER.test(expression)) {
+    throw new CubeSchemaError(`${path} must be a plain source column identifier`);
+  }
+  if (!available.has(expression)) {
+    throw new CubeSchemaError(
+      `${path} references ${JSON.stringify(expression)}, which is not a governed source column`
+    );
+  }
+  return expression;
+}
+
 /**
  * Renders one published model version as a Cube YAML document.
+ *
+ * Kept as the compatibility entry point used by existing callers and tests.
  */
 export function buildCube(input: CubeGenerationInput): GeneratedCube {
-  const { model, version } = input;
-  const definition = asRecord(version.definition);
-  // Definitions predating Model Studio (ADR 0003) have no source/access block;
-  // they default to the governed source and the department scope.
-  const declaredSource = asRecord(definition.source).source_id;
-  const sourceId =
-    typeof declaredSource === 'string' && declaredSource.length > 0
-      ? declaredSource
-      : input.source.source_id;
+  const semantic =
+    input.semantic ??
+    semanticModelFromDefinition(input.version.definition, {
+      code: input.model.code,
+      name: input.model.name,
+      description: input.model.description,
+      departmentCode: input.model.department_code,
+      defaultSourceId: input.source.source_id,
+    });
+  return compileCube({ ...input, semantic });
+}
 
+/** Renders the canonical neutral model as a Cube YAML document. */
+export function compileCube(input: CubeGenerationInput & { semantic: SemanticModel }): GeneratedCube {
+  const { model, version, semantic } = input;
+
+  if (semantic.datasets.length !== 1) {
+    throw new CubeSchemaError(
+      `Model ${model.code} must expose exactly one dataset in this phase`
+    );
+  }
+  const dataset = semantic.datasets[0];
+  if (!dataset) {
+    throw new CubeSchemaError(`Model ${model.code} has no dataset`);
+  }
+
+  const sourceId = dataset.source;
   if (sourceId !== input.source.source_id) {
     throw new CubeSchemaError(
       `Model ${model.code} reads ${sourceId}, which is not the governed source ${input.source.source_id}`
@@ -164,37 +171,50 @@ export function buildCube(input: CubeGenerationInput): GeneratedCube {
     );
   }
   if (RESERVED_CUBE_NAMES.has(model.code)) {
-    throw new CubeSchemaError(`Model code ${JSON.stringify(model.code)} collides with a built-in Cube member`);
+    throw new CubeSchemaError(
+      `Model code ${JSON.stringify(model.code)} collides with a built-in Cube member`
+    );
   }
 
   const available = new Set(input.source.columns);
-  const dimensions = asArray(definition.dimensions);
-  const measures = asArray(definition.measures);
-  if (dimensions.length === 0) throw new CubeSchemaError(`Model ${model.code} has no dimensions`);
-  if (measures.length === 0) throw new CubeSchemaError(`Model ${model.code} has no measures`);
+  const fields = dataset.fields;
+  const metrics = semantic.metrics;
+  if (fields.length === 0) throw new CubeSchemaError(`Model ${model.code} has no dimensions`);
+  if (metrics.length === 0) throw new CubeSchemaError(`Model ${model.code} has no measures`);
 
   const memberNames = new Set<string>();
-  for (const dimension of dimensions) {
-    const code = requiredString(dimension.code, 'dimensions[].code');
-    if (!IDENTIFIER.test(code)) throw new CubeSchemaError(`Dimension code ${JSON.stringify(code)} is not an identifier`);
-    if (memberNames.has(code)) throw new CubeSchemaError(`Duplicate member code ${JSON.stringify(code)}`);
+  for (const field of fields) {
+    const code = requiredString(field.name, 'dimensions[].code');
+    if (!IDENTIFIER.test(code)) {
+      throw new CubeSchemaError(`Dimension code ${JSON.stringify(code)} is not an identifier`);
+    }
+    if (memberNames.has(code)) {
+      throw new CubeSchemaError(`Duplicate member code ${JSON.stringify(code)}`);
+    }
     memberNames.add(code);
   }
-  for (const measure of measures) {
-    const code = requiredString(measure.code, 'measures[].code');
-    if (!IDENTIFIER.test(code)) throw new CubeSchemaError(`Measure code ${JSON.stringify(code)} is not an identifier`);
-    if (memberNames.has(code)) throw new CubeSchemaError(`Duplicate member code ${JSON.stringify(code)}`);
+  for (const metric of metrics) {
+    const code = requiredString(metric.name, 'measures[].code');
+    if (!IDENTIFIER.test(code)) {
+      throw new CubeSchemaError(`Measure code ${JSON.stringify(code)} is not an identifier`);
+    }
+    if (memberNames.has(code)) {
+      throw new CubeSchemaError(`Duplicate member code ${JSON.stringify(code)}`);
+    }
     memberNames.add(code);
   }
 
-  const declaredAccess = asRecord(definition.access).row_level_field;
-  const accessField = resolveAccessMember(
-    typeof declaredAccess === 'string' && declaredAccess.length > 0
-      ? declaredAccess
-      : DEPARTMENT_SCOPE_COLUMN,
-    dimensions,
-    model.code
-  );
+  const accessField = fields.find((field) => field.name === semantic.access.row_level_field);
+  if (!accessField) {
+    throw new CubeSchemaError(
+      `Access field ${JSON.stringify(semantic.access.row_level_field)} must be a dimension of model ${model.code}`
+    );
+  }
+  if (accessField.expression.column !== DEPARTMENT_SCOPE_COLUMN) {
+    throw new CubeSchemaError(
+      `Access dimension ${JSON.stringify(accessField.name)} of model ${model.code} must read the governed ${DEPARTMENT_SCOPE_COLUMN} column`
+    );
+  }
 
   const lines: string[] = ['cubes:', `  - name: ${quote(model.code)}`];
   const description = model.description?.trim()
@@ -204,49 +224,68 @@ export function buildCube(input: CubeGenerationInput): GeneratedCube {
   lines.push(`    sql_table: ${quote(sourceId)}`);
 
   lines.push('    dimensions:');
-  for (const dimension of dimensions) {
-    const code = String(dimension.code);
-    const expression = requiredColumn(dimension.expression, `dimensions.${code}.expression`, available);
-    const type = DIMENSION_TYPES[String(dimension.data_type)];
+  for (const field of fields) {
+    const code = field.name;
+    const expression = requiredColumn(
+      field.expression.column,
+      `dimensions.${code}.expression`,
+      available
+    );
+    const type = DIMENSION_TYPES[field.datatype];
     if (!type) {
       throw new CubeSchemaError(
-        `Dimension ${code} has unsupported data_type ${JSON.stringify(dimension.data_type)}`
+        `Dimension ${code} has unsupported data_type ${JSON.stringify(field.datatype)}`
       );
     }
     lines.push(`      - name: ${quote(code)}`);
-    if (typeof dimension.name === 'string' && dimension.name.length > 0) {
-      lines.push(`        title: ${quote(dimension.name)}`);
+    if (field.label.length > 0) {
+      lines.push(`        title: ${quote(field.label)}`);
     }
     lines.push(`        sql: ${quote(expression)}`);
     lines.push(`        type: ${quote(type)}`);
   }
 
   lines.push('    measures:');
-  for (const measure of measures) {
-    const code = String(measure.code);
-    const aggregation = String(measure.aggregation ?? 'sum');
+  for (const metric of metrics) {
+    const code = metric.name;
+    const aggregation = metric.aggregation;
     const type = AGGREGATION_TYPES[aggregation];
-    if (!type) {
-      throw new CubeSchemaError(`Measure ${code} has unsupported aggregation ${JSON.stringify(aggregation)}`);
+    if (!SEMANTIC_AGGREGATIONS.has(aggregation) || !type) {
+      throw new CubeSchemaError(
+        `Measure ${code} has unsupported aggregation ${JSON.stringify(aggregation)}`
+      );
     }
-    const format = String(measure.format ?? 'number');
-    if (!MEASURE_FORMATS.has(format)) {
-      throw new CubeSchemaError(`Measure ${code} has unsupported format ${JSON.stringify(format)}`);
+    const format = metric.format;
+    if (!SEMANTIC_FORMATS.has(format)) {
+      throw new CubeSchemaError(
+        `Measure ${code} has unsupported format ${JSON.stringify(format)}`
+      );
     }
     lines.push(`      - name: ${quote(code)}`);
-    if (typeof measure.name === 'string' && measure.name.length > 0) {
-      lines.push(`        title: ${quote(measure.name)}`);
+    if (metric.label.length > 0) {
+      lines.push(`        title: ${quote(metric.label)}`);
     }
     if (aggregation !== 'count') {
-      const expression = requiredColumn(measure.expression, `measures.${code}.expression`, available);
+      if (!metric.expression) {
+        throw new CubeSchemaError(
+          `Measure ${code} has no expression for aggregation ${aggregation}`
+        );
+      }
+      const expression = requiredColumn(
+        metric.expression.column,
+        `measures.${code}.expression`,
+        available
+      );
       lines.push(`        sql: ${quote(expression)}`);
     }
     lines.push(`        type: ${quote(type)}`);
     lines.push(`        format: ${quote(format)}`);
     if (format === 'currency') {
-      const currency = requiredString(measure.currency_code, `measures.${code}.currency_code`);
+      const currency = requiredString(metric.currency_code, `measures.${code}.currency_code`);
       if (!/^[A-Z]{3}$/.test(currency)) {
-        throw new CubeSchemaError(`Measure ${code} has an invalid ISO 4217 currency ${JSON.stringify(currency)}`);
+        throw new CubeSchemaError(
+          `Measure ${code} has an invalid ISO 4217 currency ${JSON.stringify(currency)}`
+        );
       }
       lines.push(`        currency: ${quote(currency)}`);
     }
@@ -260,7 +299,7 @@ export function buildCube(input: CubeGenerationInput): GeneratedCube {
     '      - group: "business_user"',
     '        rowLevel:',
     '          filters:',
-    `            - member: ${quote(accessField)}`,
+    `            - member: ${quote(accessField.name)}`,
     '              operator: "equals"',
     '              values:',
     '                - "{SECURITY_CONTEXT.department_code}"'
@@ -276,17 +315,6 @@ export function buildCube(input: CubeGenerationInput): GeneratedCube {
     cube_name: model.code,
     file_name: `${model.code}.yml`,
     content: `${lines.join('\n')}\n`,
-    measures: measures.map((measure) => String(measure.code)),
+    measures: metrics.map((metric) => metric.name),
   };
-}
-
-function requiredColumn(value: unknown, path: string, available: Set<string>): string {
-  const expression = requiredString(value, path);
-  if (!IDENTIFIER.test(expression)) {
-    throw new CubeSchemaError(`${path} must be a plain source column identifier`);
-  }
-  if (!available.has(expression)) {
-    throw new CubeSchemaError(`${path} references ${JSON.stringify(expression)}, which is not a governed source column`);
-  }
-  return expression;
 }

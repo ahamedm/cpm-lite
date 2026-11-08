@@ -15,6 +15,7 @@
     "migrate": "tsx scripts/migrate.ts",
     "seed": "tsx scripts/seed.ts",
     "promote-cube-schema": "tsx scripts/promote-cube-schema.ts",
+    "backfill-semantic": "tsx scripts/backfill-semantic-models.ts",
     "token": "tsx scripts/mint-token.ts",
     "test": "tsx --test test/**/*.test.ts"
   },

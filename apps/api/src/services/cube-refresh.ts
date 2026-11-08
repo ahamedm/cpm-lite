@@ -17,6 +17,7 @@ import type { Kysely } from 'kysely';
 import type { AnalyticsHandle } from '../analytics.js';
 import { writeAudit } from '../audit.js';
 import type { AppConfig } from '../config.js';
+import type { ModelDefinition } from '../contracts.js';
 import {
   buildCube,
   type GeneratedCube,
@@ -33,8 +34,11 @@ import {
   type CubeSchemaStore,
 } from '../cube/store.js';
 import { verificationTargets, verifyCubeSchema } from '../cube/verify.js';
-import { uuid } from '../http.js';
+import { safeJson, uuid } from '../http.js';
 import type { Database } from '../schema.js';
+import { semanticModelFromDefinition } from '../semantic/from-definition.js';
+import { loadSemanticModel } from '../semantic/repository.js';
+import type { SemanticModel } from '../semantic/types.js';
 
 const EVENT_TYPE = 'model_version.cube_refresh_requested';
 const WORKER_ACTOR = 'system:cube-refresh';
@@ -105,7 +109,11 @@ export async function listPublishedVersions(db: Kysely<Database>): Promise<Publi
     .execute()) as PublishedVersionRow[];
 }
 
-function cubeInputFor(row: PublishedVersionRow, source: { source_id: string; columns: Array<{ name: string }> }) {
+function cubeInputFor(
+  row: PublishedVersionRow,
+  source: { source_id: string; columns: Array<{ name: string }> },
+  semantic: SemanticModel
+) {
   return {
     model: {
       model_id: row.model_id,
@@ -119,13 +127,42 @@ function cubeInputFor(row: PublishedVersionRow, source: { source_id: string; col
       model_version_id: row.model_version_id,
       version_number: row.version_number,
       status: 'published',
-      definition: JSON.parse(row.definition) as Record<string, unknown>,
+      definition: safeJson<Record<string, unknown>>(row.definition, {}),
     },
     source: {
       source_id: source.source_id,
       columns: source.columns.map((column) => column.name),
     },
+    semantic,
   };
+}
+
+/**
+ * Prefers the normalized neutral model. The legacy JSON fallback keeps
+ * pre-0002 versions and direct test fixtures working during the compatibility
+ * window; it is not the long-term read path.
+ */
+async function semanticForRow(
+  db: Kysely<Database>,
+  row: PublishedVersionRow,
+  source: { source_id: string }
+): Promise<SemanticModel> {
+  const stored = await loadSemanticModel(db, row.model_version_id);
+  if (stored) return stored;
+  return semanticModelFromDefinition(
+    safeJson<ModelDefinition>(row.definition, {
+      schema_version: '1.0',
+      dimensions: [],
+      measures: [],
+    }),
+    {
+      code: row.code,
+      name: row.name,
+      description: row.description,
+      departmentCode: row.department_code,
+      defaultSourceId: source.source_id,
+    }
+  );
 }
 
 /**
@@ -208,7 +245,11 @@ export async function processCubeRefreshOnce(
     );
     rows = promotion.rows;
     promoted = promotion.promoted;
-    const cubes = rows.map((row) => buildCube(cubeInputFor(row, source)));
+    const cubes = await Promise.all(
+      rows.map(async (row) =>
+        buildCube(cubeInputFor(row, source, await semanticForRow(db, row, source)))
+      )
+    );
     committed = await store.commit(cubes, now);
 
     const verify = deps.verify ?? ((target) => verifyCubeSchema(config, verificationTargets(target)));
