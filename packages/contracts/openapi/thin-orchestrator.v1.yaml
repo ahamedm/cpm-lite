@@ -992,6 +992,50 @@ paths:
         '409':
           $ref: '#/components/responses/Conflict'
 
+  /api/v1/scenario-versions/{scenario_version_id}/algorithm/compile:
+    parameters:
+      - $ref: '#/components/parameters/ScenarioVersionId'
+    post:
+      tags: [Scenarios]
+      operationId: compileScenarioCalculationSource
+      summary: Compile a PRQL authoring document without saving it
+      description: >
+        Parses the constrained PRQL pipeline (from, filter, derive and select),
+        merges the structured allocate/validate/write stages and returns the
+        canonical calculation plan. The canonical plan is not persisted; save
+        the source with the scenario-version PATCH to pin it.
+      x-implementation-slice: 1
+      x-required-roles: [business_user, steward, admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalculationSourceCompileRequest'
+      responses:
+        '200':
+          description: Compiled canonical plan and authoring lineage.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalculationSourceCompileResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          description: The PRQL source or plan is invalid.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
   /api/v1/scenario-versions/{scenario_version_id}/jobs:
     parameters:
       - $ref: '#/components/parameters/ScenarioVersionId'
@@ -2304,6 +2348,16 @@ components:
       $ref: './schemas/scenarios.yaml#/ScenarioVersionSummary'
     ScenarioVersion:
       $ref: './schemas/scenarios.yaml#/ScenarioVersion'
+    CalculationPlan:
+      $ref: './schemas/scenarios.yaml#/CalculationPlan'
+    CalculationSource:
+      $ref: './schemas/scenarios.yaml#/CalculationSource'
+    CalculationSourceCompileRequest:
+      $ref: './schemas/scenarios.yaml#/CalculationSourceCompileRequest'
+    CalculationSourceCompileResponse:
+      $ref: './schemas/scenarios.yaml#/CalculationSourceCompileResponse'
+    CalculationPlanValidation:
+      $ref: './schemas/common.yaml#/CalculationPlanValidation'
     ScenarioBase:
       $ref: './schemas/scenarios.yaml#/ScenarioBase'
     ScenarioDriver:

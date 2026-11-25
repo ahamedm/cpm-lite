@@ -6,7 +6,7 @@ CONTRACTS_DIR := packages/contracts
 NPM ?= npm
 NODE ?= node
 
-.PHONY: setup data cube verify test-cube lint-api migrate-api seed-api promote-cube-schema api build-api typecheck-api verify-api web build-web typecheck-web audit test clean
+.PHONY: setup data cube verify test-cube lint-api migrate-api seed-api promote-cube-schema api worker build-api typecheck-api verify-api web build-web typecheck-web audit test clean
 
 setup:
 	$(NPM) --prefix $(CUBE_DIR) install
@@ -44,6 +44,9 @@ backfill-semantic:
 
 api:
 	$(NPM) --prefix $(API_DIR) run dev
+
+worker:
+	$(NPM) --prefix $(API_DIR) run worker
 
 build-api:
 	$(NPM) --prefix $(API_DIR) run build

@@ -12,6 +12,7 @@ export type {
   ComparisonOp,
   DeriveStage,
   FilterStage,
+  LogicalOp,
   PlanColumnType,
   PlanDriver,
   PlanExpr,
@@ -24,3 +25,16 @@ export type {
 } from './plan.js';
 export { compileDuckDbPlan } from './duckdb.js';
 export type { CompiledDuckDbPlan, CompiledValidation } from './duckdb.js';
+export {
+  CALCULATION_AUTHORING_COMPILER_VERSION,
+  CALCULATION_SOURCE_FORMAT,
+  calculationSourceHash,
+  compileCalculationSource,
+  validateCalculationSource,
+} from './authoring.js';
+export type {
+  CalculationSource,
+  CalculationSourceStage,
+  CalculationSourceWriteStage,
+  CompiledCalculationSource,
+} from './authoring.js';

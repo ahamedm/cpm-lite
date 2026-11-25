@@ -1,11 +1,18 @@
 import type { FastifyInstance } from 'fastify';
 import type { InternalJobStatusRequest } from '../contracts.js';
 import { requireServiceToken } from '../http.js';
-import { internalUpdateJob } from '../services/jobs.js';
+import { claimQueuedJob, internalUpdateJob } from '../services/jobs.js';
 import { requestContext, sendPayload, type RouteDeps } from './helpers.js';
 
 export function registerInternalRoutes(app: FastifyInstance, deps: RouteDeps): void {
   const { db, config } = deps;
+
+  app.post('/internal/v1/jobs/claim', { config: { public: true } }, async (request, reply) => {
+    requireServiceToken(request, config.serviceToken);
+    const result = await claimQueuedJob(db, requestContext(request));
+    if (!result.job) return reply.code(204).send();
+    return reply.code(200).send(result);
+  });
 
   app.post('/internal/v1/jobs/:job_id/status', { config: { public: true } }, async (request, reply) => {
     requireServiceToken(request, config.serviceToken);

@@ -7,12 +7,21 @@ import type {
   ScenarioVersionCreateRequest,
   ScenarioVersionUpdateRequest,
 } from '../contracts.js';
-import { conflict, forbidden, notFound, preconditionFailed, unprocessable } from '../errors.js';
+import { conflict, forbidden, notFound, preconditionFailed, unprocessable, ApiError } from '../errors.js';
 import { pageInfo, parseLimit, parseOffsetCursor, safeJson, slugify, uuid } from '../http.js';
 import type { Database } from '../schema.js';
 import { toJobSummary, toScenario, toScenarioVersion, toScenarioVersionSummary } from '../serializers.js';
 import { writeAudit } from '../audit.js';
 import { evaluateValidationRules } from '../rules-engine.js';
+import {
+  calculationPlanReport,
+  failedCalculationPlanReport,
+  prepareCalculationPlan,
+  prepareCalculationSource,
+  type CalculationPlanValidationReport,
+  type PreparedCalculationPlan,
+  type PreparedCalculationSource,
+} from './calculation-plan.js';
 import {
   getScenarioVersionWithScenario,
   getScenarioWithLatest,
@@ -27,6 +36,63 @@ type ListQuery = Record<string, string | undefined>;
 function assertPeriod(periodStart: string, periodEnd: string): void {
   if (periodStart > periodEnd) {
     throw unprocessable('period_start must be on or before period_end');
+  }
+}
+
+interface AlgorithmColumns {
+  calculation_plan: string | null;
+  calculation_plan_hash: string | null;
+  calculation_compiler_version: string | null;
+  calculation_source: string | null;
+  calculation_source_hash: string | null;
+  calculation_authoring_version: string | null;
+}
+
+function emptyAlgorithmColumns(): AlgorithmColumns {
+  return {
+    calculation_plan: null,
+    calculation_plan_hash: null,
+    calculation_compiler_version: null,
+    calculation_source: null,
+    calculation_source_hash: null,
+    calculation_authoring_version: null,
+  };
+}
+
+function algorithmFromPlan(
+  prepared: PreparedCalculationPlan | null
+): AlgorithmColumns {
+  if (!prepared) return emptyAlgorithmColumns();
+  return {
+    calculation_plan: JSON.stringify(prepared.plan),
+    calculation_plan_hash: prepared.plan_hash,
+    calculation_compiler_version: prepared.compiler_version,
+    calculation_source: null,
+    calculation_source_hash: null,
+    calculation_authoring_version: null,
+  };
+}
+
+function algorithmFromSource(
+  prepared: PreparedCalculationSource | null
+): AlgorithmColumns {
+  if (!prepared) return emptyAlgorithmColumns();
+  return {
+    calculation_plan: JSON.stringify(prepared.plan),
+    calculation_plan_hash: prepared.plan_hash,
+    calculation_compiler_version: prepared.compiler_version,
+    calculation_source: JSON.stringify(prepared.source),
+    calculation_source_hash: prepared.source_hash,
+    calculation_authoring_version: prepared.authoring_version,
+  };
+}
+
+function assertSingleAlgorithmInput(body: {
+  calculation_plan?: unknown;
+  calculation_source?: unknown;
+}): void {
+  if (body.calculation_plan !== undefined && body.calculation_source !== undefined) {
+    throw unprocessable('Provide either calculation_plan or calculation_source, not both');
   }
 }
 
@@ -174,6 +240,11 @@ export async function createScenario(
   assertPeriod(body.period_start, body.period_end);
   await assertPublishedModelVersion(db, body.model_version_id, user);
   const base = await resolveBase(db, body.base, user);
+  assertSingleAlgorithmInput(body);
+  const algorithm =
+    body.calculation_source !== undefined
+      ? algorithmFromSource(prepareCalculationSource(body.calculation_source, body.model_version_id))
+      : algorithmFromPlan(prepareCalculationPlan(body.calculation_plan, body.model_version_id));
 
   const code = body.code ?? slugify(body.name);
   const existing = await db
@@ -226,6 +297,7 @@ export async function createScenario(
         drivers: JSON.stringify(body.drivers ?? []),
         adjustments: JSON.stringify(body.adjustments ?? []),
         assumptions: JSON.stringify(body.assumptions ?? []),
+        ...algorithm,
         validation_report: null,
         created_by: user.subject,
         created_at: now,
@@ -397,6 +469,11 @@ export async function createScenarioVersion(
   assertPeriod(body.period_start, body.period_end);
   await assertPublishedModelVersion(db, body.model_version_id, user);
   const base = await resolveBase(db, body.base, user);
+  assertSingleAlgorithmInput(body);
+  const algorithm =
+    body.calculation_source !== undefined
+      ? algorithmFromSource(prepareCalculationSource(body.calculation_source, body.model_version_id))
+      : algorithmFromPlan(prepareCalculationPlan(body.calculation_plan, body.model_version_id));
 
   if (body.from_version_id) {
     const source = await db
@@ -447,6 +524,7 @@ export async function createScenarioVersion(
         drivers: JSON.stringify(body.drivers ?? []),
         adjustments: JSON.stringify(body.adjustments ?? []),
         assumptions: JSON.stringify(body.assumptions ?? []),
+        ...algorithm,
         validation_report: null,
         created_by: user.subject,
         created_at: now,
@@ -507,6 +585,27 @@ export async function updateScenarioVersion(
   if (body.model_version_id) await assertPublishedModelVersion(db, body.model_version_id, user);
   const base = body.base ? await resolveBase(db, body.base, user) : null;
 
+  const nextModelVersionId = body.model_version_id ?? version.model_version_id;
+  const modelVersionChanged = nextModelVersionId !== version.model_version_id;
+  assertSingleAlgorithmInput(body);
+
+  const existingSource = safeJson<Record<string, unknown> | null>(version.calculation_source, null);
+  const existingPlan = safeJson<Record<string, unknown> | null>(version.calculation_plan, null);
+  let algorithm: AlgorithmColumns | undefined;
+  if (body.calculation_source !== undefined) {
+    algorithm = algorithmFromSource(prepareCalculationSource(body.calculation_source, nextModelVersionId));
+  } else if (body.calculation_plan !== undefined) {
+    algorithm = algorithmFromPlan(prepareCalculationPlan(body.calculation_plan, nextModelVersionId));
+  } else if (modelVersionChanged && existingSource) {
+    // The stored source is pinned to the previous model version; recompile it
+    // against the new one so a model change cannot silently reinterpret it.
+    algorithm = algorithmFromSource(prepareCalculationSource(existingSource, nextModelVersionId));
+  } else if (modelVersionChanged && existingPlan) {
+    // The stored plan is pinned to the previous model version; revalidate it
+    // against the new one so a model change cannot silently reinterpret it.
+    algorithm = algorithmFromPlan(prepareCalculationPlan(existingPlan, nextModelVersionId));
+  }
+
   const result = await db
     .updateTable('scenario_version')
     .set({
@@ -525,6 +624,7 @@ export async function updateScenarioVersion(
       ...(body.drivers ? { drivers: JSON.stringify(body.drivers) } : {}),
       ...(body.adjustments ? { adjustments: JSON.stringify(body.adjustments) } : {}),
       ...(body.assumptions ? { assumptions: JSON.stringify(body.assumptions) } : {}),
+      ...(algorithm !== undefined ? algorithm : {}),
       status: 'draft',
       validation_report: null,
       updated_at: new Date(),
@@ -549,9 +649,32 @@ export async function updateScenarioVersion(
     entityVersion: updated.row_version,
     correlationId: context.correlationId,
     requestId: context.requestId,
-    after: { status: 'draft' },
+    after: { status: 'draft', calculation_plan_hash: updated.calculation_plan_hash },
   });
   return { payload: toScenarioVersion(updated), rowVersion: updated.row_version };
+}
+
+export async function compileScenarioCalculationSource(
+  db: Kysely<Database>,
+  user: AuthUser,
+  scenarioVersionId: string,
+  body: { calculation_source: unknown }
+) {
+  const { version, scenario } = await getScenarioVersionWithScenario(db, scenarioVersionId, user);
+  assertDepartmentWrite(user, scenario.department_code);
+  if (version.status !== 'draft') {
+    throw conflict('version_immutable', 'Only draft versions can be edited');
+  }
+  const prepared = prepareCalculationSource(body.calculation_source, version.model_version_id);
+  if (!prepared) throw unprocessable('calculation_source is required');
+  return {
+    calculation_plan: prepared.plan,
+    calculation_plan_hash: prepared.plan_hash,
+    calculation_compiler_version: prepared.compiler_version,
+    calculation_source: prepared.source,
+    calculation_source_hash: prepared.source_hash,
+    calculation_authoring_version: prepared.authoring_version,
+  };
 }
 
 export async function validateScenarioVersion(
@@ -581,13 +704,36 @@ export async function validateScenarioVersion(
     validated_at: new Date().toISOString(),
     issues: evaluation.issues,
     resolved_rule_versions: evaluation.resolved_rules,
+    calculation_plan: null as CalculationPlanValidationReport | null,
   };
+
+  const rawPlan = safeJson<Record<string, unknown> | null>(version.calculation_plan, null);
+  let preparedPlan: PreparedCalculationPlan | null = null;
+  if (rawPlan) {
+    try {
+      const prepared = prepareCalculationPlan(rawPlan, version.model_version_id);
+      if (!prepared) throw new Error('Calculation plan unexpectedly empty');
+      preparedPlan = prepared;
+      report.calculation_plan = calculationPlanReport(prepared);
+    } catch (error) {
+      if (error instanceof ApiError) {
+        report.valid = false;
+        report.issues.push(...(error.issues ?? []));
+        report.calculation_plan = failedCalculationPlanReport();
+      } else {
+        throw error;
+      }
+    }
+  }
 
   await db
     .updateTable('scenario_version')
     .set({
       status: report.valid ? 'validated' : 'draft',
       validation_report: JSON.stringify(report),
+      calculation_plan_hash: preparedPlan?.plan_hash ?? version.calculation_plan_hash,
+      calculation_compiler_version:
+        preparedPlan?.compiler_version ?? version.calculation_compiler_version,
       updated_at: new Date(),
       row_version: version.row_version + 1,
     })
@@ -604,7 +750,12 @@ export async function validateScenarioVersion(
     entityVersion: version.row_version + 1,
     correlationId: context.correlationId,
     requestId: context.requestId,
-    after: { valid: report.valid, issues: report.issues.length, rules: evaluation.resolved_rules.length },
+    after: {
+      valid: report.valid,
+      issues: report.issues.length,
+      rules: evaluation.resolved_rules.length,
+      calculation_plan_hash: preparedPlan?.plan_hash ?? version.calculation_plan_hash,
+    },
   });
 
   return { model_version_id: version.model_version_id, report };

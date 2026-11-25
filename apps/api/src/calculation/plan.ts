@@ -25,6 +25,7 @@ export interface PlanDriver {
 
 export type ArithmeticOp = 'add' | 'subtract' | 'multiply' | 'divide';
 export type ComparisonOp = 'eq' | 'ne' | 'gt' | 'gte' | 'lt' | 'lte';
+export type LogicalOp = 'and' | 'or' | 'not';
 
 export type PlanExpr =
   | { column: string }
@@ -32,6 +33,7 @@ export type PlanExpr =
   | { value: string; type: PlanValueType }
   | { op: ArithmeticOp | 'nullif' | 'coalesce' | 'round'; args: PlanExpr[] }
   | { op: ComparisonOp; args: PlanExpr[] }
+  | { op: LogicalOp; args: PlanExpr[] }
   | { op: 'if'; args: PlanExpr[] };
 
 export interface ScanStage {
@@ -76,6 +78,12 @@ export interface WriteStage {
   format: 'parquet';
   partition_by?: string[];
   measures: string[];
+  summary?: {
+    budget_measure?: string;
+    actual_measure?: string;
+    variance_measure?: string;
+    currency_code?: string;
+  };
 }
 
 export type PlanStage =
@@ -97,12 +105,14 @@ export interface CalculationPlan {
 export class CalculationPlanError extends Error {
   readonly code: string;
   readonly path: string;
+  readonly reason: string;
 
   constructor(code: string, path: string, message: string) {
     super(`${path || '/'}: ${message}`);
     this.name = 'CalculationPlanError';
     this.code = code;
     this.path = path;
+    this.reason = message;
   }
 }
 
@@ -330,6 +340,26 @@ function parseExpression(
       };
     }
 
+    if (op === 'and' || op === 'or') {
+      if (args.length < 2) {
+        fail('invalid_arity', `${path}/args`, `${op} requires at least two arguments`);
+      }
+      return {
+        op,
+        args: args.map((arg, index) => parseExpression(arg, `${path}/args/${index}`, drivers, columns)),
+      };
+    }
+
+    if (op === 'not') {
+      if (args.length !== 1) {
+        fail('invalid_arity', `${path}/args`, 'not requires exactly one argument');
+      }
+      return {
+        op,
+        args: [parseExpression(args[0], `${path}/args/0`, drivers, columns)],
+      };
+    }
+
     fail('unsupported_operator', `${path}/op`, `Unsupported operator "${op}"`);
   }
 
@@ -375,7 +405,7 @@ function parsePins(value: unknown): PlanPins {
   assertAllowedKeys(pins, ['model_version_id', 'semantic_hash', 'rule_version_ids', 'compiler_version'], '/pins');
   const modelVersionId = expectString(pins.model_version_id, '/pins/model_version_id');
   const semanticHash = expectString(pins.semantic_hash, '/pins/semantic_hash');
-  const ruleVersions = expectArray(pins.rule_version_ids, '/pins/rule_version_ids');
+  const ruleVersions = expectArray(pins.rule_version_ids, '/pins/rule_version_ids', 0);
   const ruleVersionIds = ruleVersions.map((item, index) =>
     expectString(item, `/pins/rule_version_ids/${index}`)
   );
@@ -549,7 +579,7 @@ function parseStages(
         break;
       }
       case 'write': {
-        assertAllowedKeys(stage, ['op', 'format', 'partition_by', 'measures'], path);
+        assertAllowedKeys(stage, ['op', 'format', 'partition_by', 'measures', 'summary'], path);
         if (stage.format !== 'parquet') {
           fail('unsupported_format', `${path}/format`, 'Only parquet output is implemented');
         }
@@ -566,8 +596,44 @@ function parseStages(
           );
           assertKnownColumns(partitionBy, columns, `${path}/partition_by`);
         }
+        let summary: WriteStage['summary'];
+        if (stage.summary !== undefined) {
+          const rawSummary = expectRecord(stage.summary, `${path}/summary`);
+          assertAllowedKeys(
+            rawSummary,
+            ['budget_measure', 'actual_measure', 'variance_measure', 'currency_code'],
+            `${path}/summary`
+          );
+          summary = {};
+          for (const key of ['budget_measure', 'actual_measure', 'variance_measure'] as const) {
+            if (rawSummary[key] !== undefined) {
+              const measure = assertIdentifier(rawSummary[key], `${path}/summary/${key}`);
+              if (!measures.includes(measure)) {
+                fail(
+                  'unknown_measure',
+                  `${path}/summary/${key}`,
+                  `"${measure}" must also appear in write.measures`
+                );
+              }
+              summary[key] = measure;
+            }
+          }
+          if (rawSummary.currency_code !== undefined) {
+            const currency = expectString(rawSummary.currency_code, `${path}/summary/currency_code`);
+            if (!CURRENCY.test(currency)) {
+              fail('invalid_currency', `${path}/summary/currency_code`, 'Expected an ISO 4217 code');
+            }
+            summary.currency_code = currency;
+          }
+        }
         sawWrite = true;
-        stages.push({ op, format: 'parquet', ...(partitionBy ? { partition_by: partitionBy } : {}), measures });
+        stages.push({
+          op,
+          format: 'parquet',
+          ...(partitionBy ? { partition_by: partitionBy } : {}),
+          measures,
+          ...(summary ? { summary } : {}),
+        });
         break;
       }
       default:

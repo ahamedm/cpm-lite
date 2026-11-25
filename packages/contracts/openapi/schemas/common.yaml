@@ -81,6 +81,23 @@ ValidationReport:
       description: Rules resolved for the validation, pinned for reproducibility.
       items:
         $ref: '#/RuleVersionRef'
+    calculation_plan:
+      oneOf:
+        - $ref: '#/CalculationPlanValidation'
+        - type: 'null'
+
+CalculationPlanValidation:
+  type: object
+  required: [valid, compiler_version]
+  properties:
+    valid:
+      type: boolean
+    plan_hash:
+      type: [string, 'null']
+      description: Content hash of the validated plan; null when validation failed.
+    compiler_version:
+      type: string
+      description: Calculation compiler version used for validation.
 
 PageInfo:
   type: object

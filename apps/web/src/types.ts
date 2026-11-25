@@ -20,6 +20,65 @@ export interface ValidationReport {
   validated_at: string;
   issues: ValidationIssue[];
   resolved_rule_versions?: Array<{ rule_version_id: string; rule_code: string; version_number: number }>;
+  calculation_plan?: CalculationPlanValidation | null;
+}
+
+export interface CalculationPlanDriver {
+  value: string;
+  type: string;
+  applies_to: string;
+  currency?: string;
+  effective_period?: string;
+  note?: string;
+}
+
+export interface CalculationPlanStage {
+  op: string;
+  [key: string]: unknown;
+}
+
+export interface CalculationPlanPins {
+  model_version_id?: string;
+  semantic_hash?: string;
+  rule_version_ids?: string[];
+  compiler_version?: string;
+  [key: string]: unknown;
+}
+
+export interface CalculationPlan {
+  format: string;
+  grain: string[];
+  pins: CalculationPlanPins;
+  drivers?: Record<string, CalculationPlanDriver>;
+  stages: CalculationPlanStage[];
+}
+
+export interface CalculationPlanValidation {
+  valid: boolean;
+  plan_hash: string | null;
+  compiler_version: string;
+}
+
+export interface CalculationSource {
+  format: string;
+  source: string;
+  artifact?: string;
+  columns: string[];
+  prql: string;
+  types: Record<string, string>;
+  grain: string[];
+  pins: CalculationPlanPins;
+  drivers?: Record<string, CalculationPlanDriver>;
+  stages: CalculationPlanStage[];
+}
+
+export interface CalculationSourceCompileResponse {
+  calculation_plan: CalculationPlan;
+  calculation_plan_hash: string;
+  calculation_compiler_version: string;
+  calculation_source: CalculationSource;
+  calculation_source_hash: string;
+  calculation_authoring_version: string;
 }
 
 export interface CubeRefresh {
@@ -281,6 +340,8 @@ export interface Job {
     period_start: string;
     period_end: string;
     allocation_strategy: string | null;
+    calculation_plan_hash?: string | null;
+    calculation_compiler_version?: string | null;
     engine_version: string;
   };
   result: JobResult | null;
@@ -307,6 +368,12 @@ export interface ScenarioVersion {
   drivers: ScenarioDriver[];
   adjustments: ScenarioAdjustment[];
   assumptions: ScenarioAssumption[];
+  calculation_plan: CalculationPlan | null;
+  calculation_plan_hash: string | null;
+  calculation_compiler_version: string | null;
+  calculation_source: CalculationSource | null;
+  calculation_source_hash: string | null;
+  calculation_authoring_version: string | null;
   validation: ValidationReport | null;
   latest_job: JobSummary | null;
   result: JobResult | null;

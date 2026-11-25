@@ -1,13 +1,17 @@
 # ADR 0009 — Portable calculation plan (first slice)
 
-- **Status:** Proposed (first slice implemented; not yet wired to job dispatch)
+- **Status:** Proposed (first slice implemented and wired into scenario versions and the job payload)
 - **Date:** 2026-11-21
 - **Deciders:** CPM Lite engineering
 - **Related:** `docs/design/processing-flow-and-calculation-plan.md` (Draft),
-  ADR 0007 (Proposed), ADR 0008 (Accepted); PRD §4.2, §6.2; C4 `api`, `jobs`,
-  `olap`
+  ADR 0007 (Proposed), ADR 0008 (Accepted), ADR 0010 (Proposed); PRD §4.2,
+  §6.2; C4 `api`, `jobs`, `olap`
 - **Implementation:** `apps/api/src/calculation/`,
-  `apps/api/test/calculation-plan.test.ts`
+  `apps/api/src/services/calculation-plan.ts`,
+  `db/migrations/0003_scenario_calculation_plan.sql`,
+  `apps/api/test/calculation-plan.test.ts`,
+  `apps/api/test/calculation-plan-service.test.ts`,
+  `apps/api/test/api.test.ts`
 
 ## Context
 
@@ -52,9 +56,10 @@ slice is reviewable and the remaining work is explicit.
      with a zero allocation instead of dropping them.
 
 4. **Lineage fields.** The compiler returns the generated SQL, selected columns,
-   `compiler_version` and `plan_hash`. These are ready to be pinned into
-   `job.payload`; the wiring is a follow-up because it changes the orchestrator
-   contract and tests.
+   `compiler_version` and `plan_hash`. The scenario service validates the plan
+   against the scenario version's model version, stores the normalized plan and
+   its hash/compiler version, and pins all of them into `job.payload`. The job
+   payload also derives `allocation_strategy` from an `allocate` stage.
 
 5. **No scenario data in the repository.** Tests use a small synthetic
    `base_facts` fixture with generic department/cost-centre, amount, percentage,
@@ -67,8 +72,9 @@ slice is reviewable and the remaining work is explicit.
   rounding and zero division.
 - The first slice validates and compiles a plan, executes it on DuckDB and
   checks pool conservation. `npm --prefix apps/api test` passes.
-- The compiler is not yet called by the API job submission path, and no Parquet
-  snapshot/result writer is implemented.
+- The compiler is called by the scenario service on create/update/validate and
+  again before job submission. The job payload pins the plan, plan hash,
+  compiler version and allocation strategy.
 - Expression result types are declared, not inferred. A target-independent type
   checker (decimal/integer/date/string compatibility, division and aggregate
   rules) is the next compiler step.
@@ -80,10 +86,9 @@ slice is reviewable and the remaining work is explicit.
 
 ## Next steps
 
-1. Wire `plan_hash` and `compiler_version` into the scenario job payload.
-2. Add a Parquet snapshot/result writer and manifest with artifact and logical
+1. Add the Parquet snapshot/result writer and manifest with artifact and logical
    hashes.
-3. Add grain-uniqueness and pool-constancy validation checks.
-4. Add the Polars and dbt lowerings and run the cross-target conformance suite.
-5. Resolve the remaining design-note decisions (Parquet role, artifact security,
+2. Add grain-uniqueness and pool-constancy validation checks.
+3. Add the Polars and dbt lowerings and run the cross-target conformance suite.
+4. Resolve the remaining design-note decisions (Parquet role, artifact security,
    cost-centre dimension, engine pinning) and move this ADR to Accepted.

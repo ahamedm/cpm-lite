@@ -40,7 +40,7 @@ It does **not** run scenario calculations, allocate costs, query Cube, or serve 
 | `Model` | yes | Metadata; no inline definition |
 | `ModelVersion` | no | Immutable after publish; one draft at a time (app-enforced) |
 | `Scenario` | yes | Metadata; department/cost-centre scoped |
-| `ScenarioVersion` | no | Pins a published model version; immutable once queued |
+| `ScenarioVersion` | no | Pins a published model version; immutable once queued; optional calculation plan |
 | `Job` | yes | One execution attempt; retry creates a new job |
 | `Rule` | yes | Metadata |
 | `RuleVersion` | no | Immutable after activation; effective-dated scopes |
@@ -51,6 +51,26 @@ It does **not** run scenario calculations, allocate costs, query Cube, or serve 
 | `Department` / `CostCentre` | reference | Read-only from the orchestrator’s perspective |
 
 Versioned resources carry a `row_version` that becomes the HTTP `ETag`. User-facing writes never mutate a published/completed version; they create a new version.
+
+A scenario version may also carry a canonical `calculation_plan` (ADR 0009). The
+API validates it against the version’s pinned model version, stores the
+normalized plan with its content hash and compiler version, and pins all three
+into the job payload. The plan is optional, editable only while the version is
+`draft`, and compiles through the DuckDB target during validation and before
+job submission.
+
+A scenario version may instead be authored as a constrained PRQL document
+(`cpm-calculation-source/0`, ADR 0010). The source names the governed scan
+source, declares the scan columns and derived column types, and contains a
+pipeline of `from`, `filter`, `derive` and `select` transforms plus structured
+`allocate`/`validate`/`write` stages. The API compiles it into the canonical
+plan, stores the source, its content hash and the authoring compiler version
+for lineage, and keeps the plan as the only executable artifact. Raw SQL,
+joins, grouping, aggregation, window functions and target-specific functions
+are rejected. Create/update accepts either `calculation_plan` or
+`calculation_source`, never both.
+`POST /scenario-versions/{id}/algorithm/compile` previews a source without
+saving it.
 
 ---
 
@@ -125,7 +145,7 @@ Base path `/api/v1`. Full request/response schemas are in the OpenAPI file.
 | Identity/reference | `GET /me`, `GET /departments`, `GET /cost-centres` |
 | Models | `GET/POST /models`, `GET/PATCH/DELETE /models/{id}`, `GET/POST /models/{id}/versions`, `GET/PATCH /model-versions/{id}`, `POST /model-versions/{id}/validate`, `POST /model-versions/{id}/publish` |
 | Model authoring | `GET /model-sources`, `POST /model-preview` |
-| Scenarios | `GET/POST /scenarios`, `GET/PATCH/DELETE /scenarios/{id}`, `GET/POST /scenarios/{id}/versions`, `GET/PATCH /scenario-versions/{id}`, `POST /scenario-versions/{id}/validate`, `GET /scenario-versions/{id}/results` |
+| Scenarios | `GET/POST /scenarios`, `GET/PATCH/DELETE /scenarios/{id}`, `GET/POST /scenarios/{id}/versions`, `GET/PATCH /scenario-versions/{id}`, `POST /scenario-versions/{id}/validate`, `POST /scenario-versions/{id}/algorithm/compile`, `GET /scenario-versions/{id}/results` |
 | Jobs | `GET /jobs`, `GET /jobs/{id}`, `POST /jobs/{id}/cancel`, `POST /jobs/{id}/retry`, `GET/POST /scenario-versions/{id}/jobs` |
 | Rules (phase 2) | `GET/POST /rules`, `GET/PATCH /rules/{id}`, `GET/POST /rules/{id}/versions`, `GET/PATCH /rule-versions/{id}`, `POST /rule-versions/{id}/validate`, `POST /rule-versions/{id}/publish`, `POST /rule-versions/{id}/retire` |
 | Review | `POST /scenario-versions/{id}/submissions`, `GET /submissions`, `GET /submissions/{id}`, `POST /submissions/{id}/decisions`, `POST /submissions/{id}/promotion`, `GET /promotions/{id}` |
@@ -262,13 +282,25 @@ Use a transactional outbox:
 
 | Event | Produced by | Consumer |
 |---|---|---|
-| `job.dispatch_requested` | Job submission | Scenario job dispatcher (AKS Job / Container Apps Job) |
+| `job.dispatch_requested` | Job submission | Scenario job dispatcher (production: AKS Job / Container Apps Job; local development: `make worker`) |
 | `model_version.cube_refresh_requested` | Model publish and model archive | Cube schema refresher (in-process consumer; ADR 0004) |
 | `promotion.requested` | Promotion endpoint | Promotion worker |
 
 The outbox row is written in the same transaction as the state change. Consumers must be idempotent by `outbox_event_id` and record `status`, `attempts`, `available_at`, `last_error`.
 
-The Cube refresh consumer is implemented. It is currently in-process because DuckDB allows a single writer; it can be lifted into a worker service once OLTP is PostgreSQL. Jobs may still remain `queued` until their external worker exists. Do not fake success. `GET /jobs/{id}` and `GET /model-versions/{id}` expose the truthful state: the refresh is `pending` → `running` → `succeeded`/`failed`, and a failure records `cube_refresh.error`.
+The Cube refresh consumer is implemented. It is currently in-process because DuckDB allows a single writer; it can be lifted into a worker service once OLTP is PostgreSQL.
+
+A development-only scenario worker is implemented (`make worker`). It claims the
+oldest queued job through `POST /internal/v1/jobs/claim` with
+`X-CPM-Service-Token`, executes the pinned calculation plan in an isolated
+in-memory DuckDB with the analytical store attached read-only, writes a
+job-scoped Parquet result under `data/results/<scenario_version_id>/<job_id>.parquet`,
+and reports `completed`/`failed` through the existing status callback. It never
+opens the OLTP database directly. It is not the production job runtime; the
+production dispatcher remains outstanding, and jobs stay `queued` when no worker
+is running. Do not fake success. `GET /jobs/{id}` and
+`GET /model-versions/{id}` expose the truthful state: the refresh is `pending` →
+`running` → `succeeded`/`failed`, and a failure records `cube_refresh.error`.
 
 ---
 
@@ -289,6 +321,10 @@ The Cube refresh consumer is implemented. It is currently in-process because Duc
 13. Source-first model authoring uses an allowlisted source profile and a
     read-only preview snapshot; arbitrary expressions are not accepted by the
     preview endpoint.
+14. Scenario algorithms can be authored in a constrained PRQL subset
+    (`cpm-calculation-source/0`) and compiled to the canonical plan. PRQL is
+    never the stored or executed plan; source lineage is recorded beside the
+    plan (ADR 0010).
 
 ---
 
@@ -341,6 +377,6 @@ Deferred: multi-currency/FX, scenario comparison endpoint (Cube serves it), pre-
 
 ## 12. Implementation status
 
-1. **Slice 1 — implemented:** migration runner, Kysely DB layer, auth/scope middleware, models/scenarios/jobs, submission/decision/promotion, rules, audit, idempotency, ETags, outbox writes, internal worker callback, Swagger UI, model source catalog/preview, end-to-end test.
+1. **Slice 1 — implemented:** migration runner, Kysely DB layer, auth/scope middleware, models/scenarios/jobs, submission/decision/promotion, rules, audit, idempotency, ETags, outbox writes, internal worker callback, Swagger UI, model source catalog/preview, PRQL authoring/compile, end-to-end test.
 2. **Slice 2 — partly implemented:** rule authoring exists; Cube refresh worker and job dispatcher integration remain.
 3. **Slice 3 — pending:** PostgreSQL migration, multi-replica API, Cube token exchange with Entra ID.

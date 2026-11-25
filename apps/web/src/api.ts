@@ -25,6 +25,8 @@ import type {
   ScenarioDriver,
   ScenarioVersion,
   ScenarioVersionSummary,
+  CalculationSource,
+  CalculationSourceCompileResponse,
   Submission,
   ValidationReport,
 } from './types';
@@ -299,6 +301,24 @@ export const listScenarioVersions = (token: string, scenarioId: string) =>
 
 export const getScenarioVersion = (token: string, id: string) =>
   get<ScenarioVersion>(`/api/v1/scenario-versions/${id}`, { token });
+
+export const updateScenarioVersion = (
+  token: string,
+  id: string,
+  body: { calculation_plan?: unknown | null; calculation_source?: unknown | null },
+  etag: string
+) => patch<ScenarioVersion>(`/api/v1/scenario-versions/${id}`, body, { token, etag });
+
+export const compileCalculationSource = (
+  token: string,
+  id: string,
+  calculationSource: CalculationSource
+) =>
+  post<CalculationSourceCompileResponse>(
+    `/api/v1/scenario-versions/${id}/algorithm/compile`,
+    { calculation_source: calculationSource },
+    { token }
+  );
 
 export const validateScenarioVersion = (token: string, id: string) =>
   post<{ model_version_id: string; report: ValidationReport }>(

@@ -38,6 +38,20 @@ npm --prefix apps/api run token -- --department finance
 npm --prefix cube run token -- --department finance
 ```
 
+Scenario jobs stay queued until a worker claims them. For local development, run
+the development-only worker in another terminal:
+
+```bash
+make worker
+```
+
+It claims queued jobs, executes the pinned calculation plan in an isolated
+DuckDB, writes Parquet results under `data/results`, and reports completion
+through the internal callback. It attaches `data/cpm_lite.duckdb` read-only; if
+Cube is holding that file, point `CPM_SCENARIO_DUCKDB_PATH` at a copy or stop
+Cube first. This is not the production job runtime; jobs remain queued when the
+worker is not running.
+
 `make test` runs the Cube verifier and schema-repository tests, OpenAPI lint,
 API end-to-end test, and UI production build.
 

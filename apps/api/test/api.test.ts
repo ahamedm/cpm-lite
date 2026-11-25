@@ -260,6 +260,47 @@ test('Thin Orchestrator API end-to-end', async () => {
     });
     assert.equal(crossDepartmentModel.statusCode, 404);
 
+    const calculationPlan = {
+      format: 'cpm-calculation-plan/0',
+      grain: ['department_code'],
+      pins: {
+        model_version_id: modelVersionId,
+        semantic_hash: 'sha256:test',
+        rule_version_ids: [],
+      },
+      drivers: {
+        growth_pct: { value: '0.05', type: 'decimal', applies_to: 'budget_amount' },
+      },
+      stages: [
+        {
+          op: 'scan',
+          source: 'gold.fact_financials',
+          columns: ['department_code', 'budget_amount'],
+        },
+        {
+          op: 'derive',
+          name: 'adjusted_budget',
+          type: 'decimal(18,2)',
+          expression: {
+            op: 'multiply',
+            args: [
+              { column: 'budget_amount' },
+              {
+                op: 'add',
+                args: [{ value: '1', type: 'integer' }, { param: 'growth_pct' }],
+              },
+            ],
+          },
+        },
+        {
+          op: 'write',
+          format: 'parquet',
+          measures: ['adjusted_budget'],
+          summary: { budget_measure: 'adjusted_budget', currency_code: 'USD' },
+        },
+      ],
+    };
+
     const createScenario = await app.inject({
       method: 'POST',
       url: '/api/v1/scenarios',
@@ -274,6 +315,7 @@ test('Thin Orchestrator API end-to-end', async () => {
         period_end: '2026-12-31',
         currency_code: 'USD',
         drivers: [{ driver_code: 'growth_pct', name: 'Growth', value: '0.05', unit: 'percent' }],
+        calculation_plan: calculationPlan,
       },
     });
     assert.equal(createScenario.statusCode, 201, createScenario.body);
@@ -288,6 +330,9 @@ test('Thin Orchestrator API end-to-end', async () => {
     });
     assert.equal(validateScenario.statusCode, 200, validateScenario.body);
     assert.equal(validateScenario.json().report.valid, true);
+    assert.equal(validateScenario.json().report.calculation_plan.valid, true);
+    assert.equal(validateScenario.json().report.calculation_plan.compiler_version, 'calculation-compiler/0');
+    assert.ok(validateScenario.json().report.calculation_plan.plan_hash);
 
     const currentScenarioVersion = await app.inject({
       method: 'GET',
@@ -295,6 +340,13 @@ test('Thin Orchestrator API end-to-end', async () => {
       headers: auth(finance),
     });
     assert.equal(currentScenarioVersion.statusCode, 200);
+    const currentScenarioVersionBody = currentScenarioVersion.json();
+    assert.equal(currentScenarioVersionBody.calculation_plan.format, 'cpm-calculation-plan/0');
+    assert.equal(
+      currentScenarioVersionBody.calculation_plan_hash,
+      validateScenario.json().report.calculation_plan.plan_hash
+    );
+    assert.equal(currentScenarioVersionBody.calculation_compiler_version, 'calculation-compiler/0');
     const scenarioVersionEtag = currentScenarioVersion.headers.etag as string;
 
     const submitJob = await app.inject({
@@ -307,6 +359,9 @@ test('Thin Orchestrator API end-to-end', async () => {
     const jobId = job.job_id as string;
     assert.equal(job.status, 'queued');
     assert.equal(job.inputs.dataset_snapshot, 'test-snapshot');
+    assert.equal(job.inputs.calculation_plan_hash, currentScenarioVersionBody.calculation_plan_hash);
+    assert.equal(job.inputs.calculation_compiler_version, 'calculation-compiler/0');
+    assert.equal(job.inputs.allocation_strategy, null);
 
     const replayJob = await app.inject({
       method: 'POST',
@@ -315,6 +370,34 @@ test('Thin Orchestrator API end-to-end', async () => {
     });
     assert.equal(replayJob.statusCode, 202);
     assert.equal(replayJob.json().job_id, jobId);
+
+    const unauthorisedClaim = await app.inject({
+      method: 'POST',
+      url: '/internal/v1/jobs/claim',
+    });
+    assert.equal(unauthorisedClaim.statusCode, 403);
+
+    const claim = await app.inject({
+      method: 'POST',
+      url: '/internal/v1/jobs/claim',
+      headers: { 'x-cpm-service-token': serviceToken },
+    });
+    assert.equal(claim.statusCode, 200, claim.body);
+    const claimed = claim.json().job;
+    assert.equal(claimed.job_id, jobId);
+    assert.equal(claimed.status, 'running');
+    assert.equal(claimed.payload.scenario.calculation_plan.format, 'cpm-calculation-plan/0');
+    assert.equal(
+      claimed.payload.inputs.calculation_plan_hash,
+      currentScenarioVersionBody.calculation_plan_hash
+    );
+
+    const noQueuedJob = await app.inject({
+      method: 'POST',
+      url: '/internal/v1/jobs/claim',
+      headers: { 'x-cpm-service-token': serviceToken },
+    });
+    assert.equal(noQueuedJob.statusCode, 204);
 
     const unauthorisedWorker = await app.inject({
       method: 'POST',
@@ -495,6 +578,65 @@ test('Thin Orchestrator API end-to-end', async () => {
     assert.equal(publishRule.statusCode, 200, publishRule.body);
     assert.equal(publishRule.json().status, 'active');
 
+    const invalidCalculationPlan = await app.inject({
+      method: 'POST',
+      url: `/api/v1/scenarios/${scenarioId}/versions`,
+      headers: auth(finance),
+      payload: {
+        model_version_id: modelVersionId,
+        base: { base_type: 'actuals' },
+        period_start: '2026-01-01',
+        period_end: '2026-12-31',
+        currency_code: 'USD',
+        drivers: [],
+        calculation_plan: {
+          ...calculationPlan,
+          stages: [
+            {
+              op: 'scan',
+              source: 'gold.fact_financials',
+              columns: ['budget_amount; DROP TABLE gold.fact_financials'],
+            },
+          ],
+        },
+      },
+    });
+    assert.equal(invalidCalculationPlan.statusCode, 422, invalidCalculationPlan.body);
+    assert.ok(
+      invalidCalculationPlan
+        .json()
+        .errors.some((issue: { code: string }) => issue.code === 'invalid_identifier')
+    );
+
+    const mismatchedCalculationPlan = await app.inject({
+      method: 'POST',
+      url: `/api/v1/scenarios/${scenarioId}/versions`,
+      headers: auth(finance),
+      payload: {
+        model_version_id: modelVersionId,
+        base: { base_type: 'actuals' },
+        period_start: '2026-01-01',
+        period_end: '2026-12-31',
+        currency_code: 'USD',
+        drivers: [],
+        calculation_plan: {
+          ...calculationPlan,
+          pins: {
+            ...calculationPlan.pins,
+            model_version_id: '00000000-0000-0000-0000-000000000000',
+          },
+        },
+      },
+    });
+    assert.equal(mismatchedCalculationPlan.statusCode, 422, mismatchedCalculationPlan.body);
+    assert.ok(
+      mismatchedCalculationPlan
+        .json()
+        .errors.some(
+          (issue: { code: string }) => issue.code === 'calculation_plan_model_version_mismatch'
+        )
+    );
+
     const createSecondVersion = await app.inject({
       method: 'POST',
       url: `/api/v1/scenarios/${scenarioId}/versions`,
@@ -519,6 +661,87 @@ test('Thin Orchestrator API end-to-end', async () => {
     assert.equal(failedValidation.statusCode, 200);
     assert.equal(failedValidation.json().report.valid, false);
     assert.ok(failedValidation.json().report.issues.some((issue: { code: string }) => issue.code === 'require_growth_driver'));
+
+    const calculationSource = {
+      format: 'cpm-calculation-source/0',
+      source: 'gold.fact_financials',
+      columns: ['department_code', 'budget_amount', 'actual_amount'],
+      prql: `from gold.fact_financials
+filter actual_amount >= 0
+derive adjusted_budget = budget_amount * (1 + growth_pct)
+select {department_code, adjusted_budget}`,
+      types: { adjusted_budget: 'decimal(18,2)' },
+      grain: ['department_code'],
+      pins: {
+        model_version_id: modelVersionId,
+        semantic_hash: 'sha256:test',
+        rule_version_ids: [],
+      },
+      drivers: {
+        growth_pct: { value: '0.05', type: 'decimal', applies_to: 'budget_amount' },
+      },
+      stages: [
+        {
+          op: 'write',
+          format: 'parquet',
+          summary: { budget_measure: 'adjusted_budget', currency_code: 'USD' },
+        },
+      ],
+    };
+
+    const compiledSource = await app.inject({
+      method: 'POST',
+      url: `/api/v1/scenario-versions/${secondVersionId}/algorithm/compile`,
+      headers: auth(finance),
+      payload: { calculation_source: calculationSource },
+    });
+    assert.equal(compiledSource.statusCode, 200, compiledSource.body);
+    const compiledSourceBody = compiledSource.json();
+    assert.equal(compiledSourceBody.calculation_plan.format, 'cpm-calculation-plan/0');
+    assert.ok(compiledSourceBody.calculation_plan_hash);
+    assert.ok(compiledSourceBody.calculation_source_hash);
+    assert.equal(compiledSourceBody.calculation_authoring_version, 'prql-authoring/0+prqlc-0.12.1');
+    assert.deepEqual(compiledSourceBody.calculation_plan.stages[0].columns, calculationSource.columns);
+
+    const deniedCompile = await app.inject({
+      method: 'POST',
+      url: `/api/v1/scenario-versions/${secondVersionId}/algorithm/compile`,
+      headers: auth(hr),
+      payload: { calculation_source: calculationSource },
+    });
+    assert.equal(deniedCompile.statusCode, 404, deniedCompile.body);
+
+    const secondVersion = await app.inject({
+      method: 'GET',
+      url: `/api/v1/scenario-versions/${secondVersionId}`,
+      headers: auth(finance),
+    });
+    assert.equal(secondVersion.statusCode, 200, secondVersion.body);
+    const secondVersionEtag = secondVersion.headers.etag as string;
+
+    const bothAlgorithms = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/scenario-versions/${secondVersionId}`,
+      headers: { ...auth(finance), 'if-match': secondVersionEtag },
+      payload: {
+        calculation_plan: calculationPlan,
+        calculation_source: calculationSource,
+      },
+    });
+    assert.equal(bothAlgorithms.statusCode, 422, bothAlgorithms.body);
+
+    const savedSource = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/scenario-versions/${secondVersionId}`,
+      headers: { ...auth(finance), 'if-match': secondVersionEtag },
+      payload: { calculation_source: calculationSource },
+    });
+    assert.equal(savedSource.statusCode, 200, savedSource.body);
+    const savedSourceBody = savedSource.json();
+    assert.equal(savedSourceBody.calculation_source.format, 'cpm-calculation-source/0');
+    assert.equal(savedSourceBody.calculation_source_hash, compiledSourceBody.calculation_source_hash);
+    assert.equal(savedSourceBody.calculation_plan.format, 'cpm-calculation-plan/0');
+    assert.equal(savedSourceBody.calculation_authoring_version, 'prql-authoring/0+prqlc-0.12.1');
   } finally {
     await app.close();
     rmSync(tempDir, { recursive: true, force: true });

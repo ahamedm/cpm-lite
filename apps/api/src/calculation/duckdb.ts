@@ -131,6 +131,17 @@ function expressionSql(expression: PlanExpr, drivers: Record<string, PlanDriver>
       }
       return `(${expressionSql(left, drivers)} ${COMPARISON_SQL[expression.op]} ${expressionSql(right, drivers)})`;
     }
+    case 'and':
+      return `(${args.map((arg) => expressionSql(arg, drivers)).join(' AND ')})`;
+    case 'or':
+      return `(${args.map((arg) => expressionSql(arg, drivers)).join(' OR ')})`;
+    case 'not': {
+      const [operand] = args;
+      if (!operand) {
+        throw new CalculationPlanError('invalid_arity', '/expression/args', 'not requires one argument');
+      }
+      return `(NOT ${expressionSql(operand, drivers)})`;
+    }
   }
 }
 

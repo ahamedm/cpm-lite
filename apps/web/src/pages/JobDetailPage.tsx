@@ -4,7 +4,7 @@ import { Ban, RotateCcw, TerminalSquare } from 'lucide-react';
 import { useAuth } from '../auth';
 import { cancelJob, retryJob } from '../api';
 import { useJob } from '../queries';
-import { dateTime, money, periodLabel, personLabel, titleCase } from '../format';
+import { dateTime, money, periodLabel, personLabel, shortId, titleCase } from '../format';
 import {
   Button,
   EmptyState,
@@ -94,6 +94,13 @@ export function JobDetailPage() {
               <div><dt>Dataset snapshot</dt><dd className="mono">{job.inputs.dataset_snapshot ?? '—'}</dd></div>
               <div><dt>Period</dt><dd>{periodLabel(job.inputs.period_start ?? '', job.inputs.period_end ?? '')}</dd></div>
               <div><dt>Allocation strategy</dt><dd>{job.inputs.allocation_strategy ? titleCase(job.inputs.allocation_strategy) : '—'}</dd></div>
+              <div>
+                <dt>Plan hash</dt>
+                <dd className="mono small" title={job.inputs.calculation_plan_hash ?? undefined}>
+                  {job.inputs.calculation_plan_hash ? shortId(job.inputs.calculation_plan_hash) : '—'}
+                </dd>
+              </div>
+              <div><dt>Compiler</dt><dd className="mono">{job.inputs.calculation_compiler_version ?? '—'}</dd></div>
               <div><dt>Queued</dt><dd>{dateTime(job.queued_at)}</dd></div>
               <div><dt>Started</dt><dd>{dateTime(job.started_at)}</dd></div>
               <div><dt>Finished</dt><dd>{dateTime(job.finished_at)}</dd></div>

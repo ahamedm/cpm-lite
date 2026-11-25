@@ -4,8 +4,9 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { ArrowUpRight, CheckCircle2, ClipboardCheck, Play, RotateCcw } from 'lucide-react';
 import { useAuth } from '../auth';
 import { createSubmission, submitScenarioJob, validateScenarioVersion } from '../api';
-import { useScenario, useScenarioVersion, useScenarioVersionJobs } from '../queries';
+import { useMe, useScenario, useScenarioVersion, useScenarioVersionJobs } from '../queries';
 import { dateTime, money, periodLabel, personLabel, titleCase } from '../format';
+import { ScenarioAlgorithmPanel } from '../components/ScenarioAlgorithmPanel';
 import {
   Button,
   Dialog,
@@ -27,6 +28,7 @@ export function ScenarioDetailPage() {
   const queryClient = useQueryClient();
   const { push } = useToast();
   const scenarioQuery = useScenario(token, scenarioId);
+  const meQuery = useMe(token);
   const versionId = scenarioQuery.data?.data.latest_version.scenario_version_id;
   const versionQuery = useScenarioVersion(token, versionId);
   const jobsQuery = useScenarioVersionJobs(token, versionId);
@@ -78,6 +80,13 @@ export function ScenarioDetailPage() {
   const scenario = scenarioQuery.data!.data;
   const version = versionQuery.data?.data;
   const jobs = jobsQuery.data?.data.data ?? [];
+  const me = meQuery.data?.data;
+  const canEditScenario = Boolean(
+    me &&
+      (me.roles.includes('steward') ||
+        me.roles.includes('admin') ||
+        me.department_code === scenario.department_code)
+  );
 
   const canValidate = version?.status === 'draft' || version?.status === 'validated';
   const canRun = version?.status === 'draft' || version?.status === 'validated' || version?.status === 'failed' || version?.status === 'cancelled';
@@ -139,6 +148,13 @@ export function ScenarioDetailPage() {
                 <div><dt>Updated</dt><dd>{dateTime(version.updated_at)}</dd></div>
               </dl>
             </Panel>
+
+            <ScenarioAlgorithmPanel
+              version={version}
+              etag={versionQuery.data?.etag ?? ''}
+              canEdit={canEditScenario}
+              onChanged={invalidate}
+            />
 
             <Panel title="Drivers" description="Assumptions applied by the scenario engine.">
               {version.drivers.length === 0 ? (

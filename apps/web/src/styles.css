@@ -1140,6 +1140,16 @@ pre,
   color: var(--negative);
 }
 
+.problem > div {
+  min-width: 0;
+}
+
+.problem p,
+.problem li,
+.problem code {
+  overflow-wrap: anywhere;
+}
+
 .problem strong {
   font-size: 12px;
   font-weight: 600;
@@ -1397,6 +1407,94 @@ pre,
   font-size: 10.5px;
   line-height: 1.55;
   color: var(--ink-2);
+}
+
+.algorithm-drivers {
+  margin-top: 16px;
+}
+
+.algorithm-drivers__title {
+  margin-bottom: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+.algorithm-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.algorithm-source {
+  margin-top: 12px;
+}
+
+.algorithm-source .algorithm-actions {
+  margin-top: 0;
+}
+
+.algorithm-types {
+  margin-top: 14px;
+}
+
+.algorithm-types__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.algorithm-types__head .algorithm-drivers__title {
+  margin: 0;
+}
+
+.algorithm-types__rows {
+  border-top: 1px solid var(--line);
+}
+
+.algorithm-types__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.algorithm-types__name {
+  flex: 1 1 180px;
+  min-width: 0;
+}
+
+.algorithm-types__type {
+  flex: 0 1 160px;
+}
+
+.algorithm-settings {
+  margin-top: 14px;
+}
+
+.algorithm-settings summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+.algorithm-settings .field {
+  margin-top: 10px;
+}
+
+.algorithm-preview {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.algorithm-preview .table-wrap {
+  margin-top: 10px;
 }
 
 .inline-status {

@@ -1,10 +1,12 @@
 # Design Note — Processing flow and portable calculation plan
 
-- **Status:** Draft — for review. Not approved, not implemented.
+- **Status:** Draft — for review. Core compiler and scenario wiring implemented;
+  Parquet writer, Polars/dbt targets and client preview remain.
 - **Date:** 2026-11-21
 - **Companion ADRs:** `docs/adr/0007-derived-columns-and-reference-model-joins.md`
   (Proposed), `docs/adr/0008-neutral-semantic-model-and-target-compilers.md`
-  (Accepted)
+  (Accepted), `docs/adr/0009-portable-calculation-plan.md` (Proposed),
+  `docs/adr/0010-scenario-algorithm-authoring-surface.md` (Accepted)
 - **Related:** PRD §4.1–§4.4, §5.2–§5.4, §6.1–§6.7; C4 `api`, `jobs`, `cube`,
   `olap`; design note
   `docs/design/derived-columns-and-reference-model-joins.md` (Draft)
@@ -443,7 +445,7 @@ in §4.2; it is not a second hypothesis ID.
 | ID | Hypothesis | Why it is not validated | Validation |
 |---|---|---|---|
 | H13 | Cost centre is a first-class analytical dimension | The sample fact `gold.fact_financials` has department, category and region, not cost centre; cost centre is currently an authorization/scope attribute | V4 |
-| H14 | The abstract representation is intuitive for planners | No user study | V5 |
+| H14 | The abstract representation is intuitive for planners | No user study; the language choice was evaluated in §11 and does not settle intuitiveness | V5 |
 | H15 | One canonical plan can be lowered automatically to Polars and dbt | No generator; only manual equivalence | V1, V9 |
 | H16 | Sensitive extracts can be protected by statistics-off, encryption or column omission | Options exist; encryption and column omission were not executed | V6 |
 | H17 | Client and server performance is acceptable at realistic scale | No benchmark; fixture was tiny | V7 |
@@ -508,7 +510,9 @@ is not “validated” because a demo worked; it needs a repeatable check.
   driver, allocate a pool, read the result.
 - Measure task success, time, error type and whether the planner can explain the
   calculation.
-- Compare a template-first composer with a free-form formula editor.
+- Compare a template-first composer with a free-form formula editor. The PRQL
+  alternative and its evidence are recorded in §11; the user study is still
+  required and this pass criterion is unchanged.
 - **Pass:** template-first meets the task-success target and produces fewer
   semantic errors; free-form remains a Data Engineering capability.
 - **Phase:** before Phase 4 UI work.
@@ -603,6 +607,12 @@ is not “validated” because a demo worked; it needs a repeatable check.
 - Unit/property tests: pool conservation, determinism, injection, unknown
   columns, type errors, aggregate nesting, cycle detection.
 - **Exit:** V1 (DuckDB), V2 and the DuckDB half of H12 pass; `make test` is green.
+
+**Implemented (2026-11-25):** `apps/api/src/calculation/`, scenario-version
+persistence (migration `0003_scenario_calculation_plan.sql`),
+`apps/api/src/services/calculation-plan.ts`, validation-report metadata and job
+payload pinning. The OpenAPI contract and API tests are updated. Parquet
+snapshot/result writing remains Phase 2.
 
 #### Phase 2 — Parquet artifacts and manifest
 
@@ -732,6 +742,134 @@ The implementation must record these in an ADR before Phase 1:
   operating choice is open.
 - Are allocation rules fully data-driven (rule parameters) or can a steward
   choose a strategy that changes the plan shape?
+
+---
+
+## 11. Authoring representation — PRQL evaluation (2026-11-25)
+
+### 11.1 Question
+
+Could PRQL replace `cpm-calculation-plan/0` as the stored and authored
+representation, so the scenario UI becomes a declarative text surface instead
+of a JSON editor? The only editable surface today is a JSON textarea in
+`apps/web/src/components/ScenarioAlgorithmPanel.tsx`. This is the language half
+of H14 (§5.4) and V5 (§6); it does not replace the user study.
+
+### 11.2 Method
+
+- Reviewed the canonical plan and validator (`apps/api/src/calculation/plan.ts`),
+  the DuckDB compiler (`duckdb.ts`), the scenario-plan service
+  (`apps/api/src/services/calculation-plan.ts`), the OpenAPI `CalculationPlan`
+  schema and the current UI panel.
+- Compiled representative fragments with `prql-js` 0.12.1 against target
+  `duckdb` (latest `prqlc` release 0.13.14, published 2026-07-24).
+- Checked the DuckDB community extension `prql` v1.1.0.
+- The spike ran outside the repository; no generated artifacts are committed.
+
+### 11.3 Findings
+
+**F1 — Coverage.** The plan is only partly relational. `scan`, `filter` and
+`derive` map to PRQL transforms. `grain`, `pins`, per-derive `type`,
+`allocate` (pool, basis, partition, eligibility, rounding, residual,
+tolerance), `validate` and `write` do not: PRQL compiles queries only, with no
+DDL/DML. Allocation is the core governed operation and would have to become
+out-of-band directives — a bespoke dialect rather than PRQL.
+
+**F2 — Decimal and zero-division semantics regress.** PRQL deliberately leaves
+numeric types, division and rounding to the target. The fragment
+
+```prql
+from t
+derive rate = amount / basis
+select {rate}
+```
+
+compiles to `SELECT amount / basis AS rate FROM t`. On DuckDB that is `DOUBLE`
+and yields `inf` for a zero denominator. The current compiler emits
+`CAST(... AS DECIMAL(38,6))` and `NULLIF(..., 0)` for exactly this reason
+(`duckdb.ts`). Storing PRQL would therefore breach I11 and the lowering
+contract in §3.3 unless raw SQL is embedded back into the plan.
+
+**F3 — `s"..."` is a raw SQL escape hatch.** The fragment
+`derive x = s"1); DROP TABLE gold.fact_financials; --"` compiles with that text
+verbatim inside the `SELECT`. A user-editable PRQL surface would breach I5
+("no user-supplied SQL"). `prql_to_pl` does expose `SString` nodes, so an AST
+policy could reject them — but that is extra attack surface the structural
+validator does not have.
+
+**F4 — Semantics belong to the target, not the plan.** Compiled window and
+aggregate fragments used the target's own `ROW_NUMBER`/`COUNT`/`COALESCE`
+choices and inferred column types; PRQL carries no decimal precision contract.
+The cross-target guarantee in §3.3 (same types, nulls, rounding and ordering in
+DuckDB, Polars and dbt) would not survive.
+
+**F5 — Runtime and supply chain.** `prql-js` is a WASM binding that lags the
+compiler (0.12.1 vs 0.13.14). The DuckDB `prql` extension v1.1.0 needs a Rust
+toolchain, is excluded on `linux_amd64_musl`, and its own hello-world uses
+`s"select * from 'https://...'"`. Neither is a neutral swap for a validated
+JSON document.
+
+**F6 — The readability win is real but narrow.** For a derive node, PRQL is
+clearly better than the JSON AST:
+
+```text
+derive adjusted_budget = base_budget * (1 + growth_rate)
+```
+
+versus the nested `{"op":"multiply","args":[...]}` form in Appendix A. But the
+plan's expression algebra is eight operators plus column, param and literal.
+A small infix parser captures the same readability without a relational
+language, a WASM dependency or an escape hatch.
+
+**F7 — Hashing must stay on the canonical plan.** `plan_hash` is a content hash
+of the normalised plan and is pinned into the job payload. Hashing PRQL source
+would make two different sources that mean the same thing hash differently,
+and would make the hash depend on the PRQL compiler version.
+
+### 11.4 Conclusion (adopted; see ADR 0010)
+
+- Keep `cpm-calculation-plan/0` as the storage, hash and execution contract.
+- Add an authoring layer above it: a template-first composer as the primary
+  planner surface, with an optional infix (or constrained PRQL) expression
+  editor for `filter` and `derive` only.
+- Compile authoring text to `PlanExpr` at the API boundary; never let the
+  worker or the planner hold executable SQL.
+- If a PRQL subset is ever adopted: pin `from` to the governed source, allow
+  only `filter`/`derive`, reject `join`, `group`, `aggregate`, `window`,
+  `SString` and `sql"..."`, infer types in our compiler, map PRQL spans to the
+  existing path-addressed issues, and store `{source, source_hash,
+  authoring_compiler_version}` as lineage while hashing the canonical plan.
+
+### 11.5 Effect on the register
+
+H14 remains **not validated** and V5 is unchanged: changing syntax is not
+evidence that planners find the representation intuitive. The evaluation
+narrows the implementation options; it does not replace the user study.
+Recorded as ADR 0010 (Accepted).
+
+### 11.6 Implementation (2026-11-25)
+
+The authoring layer is implemented as `cpm-calculation-source/0`:
+
+- `apps/api/src/calculation/authoring.ts` parses the constrained PRQL pipeline
+  with `prql-js` 0.12.1, translates the AST into canonical `scan`, `filter` and
+  `derive` stages, appends the structured `allocate`/`validate`/`write` stages
+  and validates the result with the existing plan validator.
+- `from`, `filter`, `derive` and `select` are accepted. Raw SQL, joins,
+  grouping, aggregation, window functions, `sort` and `take` are rejected.
+  Every derived column needs an explicit type in `types`.
+- The canonical plan remains the stored, hashed and executed artifact. The
+  source, source hash and authoring compiler version are stored alongside it
+  for lineage (`db/migrations/0004_scenario_calculation_source.sql`).
+- `POST /api/v1/scenario-versions/{id}/algorithm/compile` previews a source
+  without saving. Scenario create/update accepts `calculation_source` as an
+  alternative to `calculation_plan`, never both.
+- The Scenario Algorithm panel makes PRQL the primary editing surface and
+  keeps the canonical plan JSON as an advanced mode.
+
+Conformance and security cases are covered by
+`apps/api/test/calculation-authoring.test.ts` and the end-to-end API test. V5
+remains the open acceptance test for intuitiveness.
 
 ---
 

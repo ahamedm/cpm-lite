@@ -326,11 +326,15 @@ export function Dialog({
   size?: 'sm' | 'md' | 'lg';
 }) {
   const ref = useRef<HTMLDialogElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const dialog = ref.current;
     if (!dialog) return;
-    if (open && !dialog.open) dialog.showModal();
+    if (open && !dialog.open) {
+      dialog.showModal();
+      if (bodyRef.current) bodyRef.current.scrollTop = 0;
+    }
     if (!open && dialog.open) dialog.close();
   }, [open]);
 
@@ -355,7 +359,7 @@ export function Dialog({
           <X size={16} />
         </button>
       </div>
-      <div className="dialog__body">{children}</div>
+      <div className="dialog__body" ref={bodyRef}>{children}</div>
       {footer ? <div className="dialog__footer">{footer}</div> : null}
     </dialog>
   );

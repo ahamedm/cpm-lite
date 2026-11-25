@@ -9,6 +9,7 @@ import type { Database } from '../schema.js';
 import { toJob, toJobSummary } from '../serializers.js';
 import { writeAudit, writeOutbox } from '../audit.js';
 import { evaluateValidationRules } from '../rules-engine.js';
+import { calculationPlanReport, prepareCalculationPlan } from './calculation-plan.js';
 import {
   getJobWithScope,
   getScenarioVersionWithScenario,
@@ -48,6 +49,8 @@ export async function submitScenarioJob(
   }
 
   const drivers = safeJson<Array<{ driver_code?: string }>>(version.drivers, []);
+  const rawPlan = safeJson<Record<string, unknown> | null>(version.calculation_plan, null);
+  const preparedPlan = rawPlan ? prepareCalculationPlan(rawPlan, version.model_version_id) : null;
   const evaluation = await evaluateValidationRules(db, {
     departmentCode: scenario.department_code,
     costCentreCode: scenario.cost_centre_code,
@@ -62,6 +65,7 @@ export async function submitScenarioJob(
     validated_at: new Date().toISOString(),
     issues: evaluation.issues,
     resolved_rule_versions: evaluation.resolved_rules,
+    calculation_plan: preparedPlan ? calculationPlanReport(preparedPlan) : null,
   };
 
   if (!evaluation.valid) {
@@ -89,7 +93,9 @@ export async function submitScenarioJob(
     dataset_snapshot: config.datasetSnapshot,
     period_start: dateOnly(version.period_start),
     period_end: dateOnly(version.period_end),
-    allocation_strategy: null,
+    calculation_plan_hash: preparedPlan?.plan_hash ?? null,
+    calculation_compiler_version: preparedPlan?.compiler_version ?? null,
+    allocation_strategy: preparedPlan?.has_allocation ? 'proportional' : null,
     engine_version: config.engineVersion,
   };
   const payload = {
@@ -103,6 +109,7 @@ export async function submitScenarioJob(
       drivers: safeJson(version.drivers, []),
       adjustments: safeJson(version.adjustments, []),
       assumptions: safeJson(version.assumptions, []),
+      calculation_plan: preparedPlan?.plan ?? null,
     },
   };
 
@@ -174,6 +181,88 @@ export async function submitScenarioJob(
   });
 
   return { payload: toJob(job), rowVersion: job.row_version };
+}
+
+export interface InternalJob {
+  job_id: string;
+  scenario_version_id: string;
+  status: string;
+  attempt: number;
+  max_attempts: number;
+  engine_version: string;
+  payload: Record<string, unknown>;
+}
+
+function toInternalJob(row: JobRow): InternalJob {
+  return {
+    job_id: row.job_id,
+    scenario_version_id: row.scenario_version_id,
+    status: row.status,
+    attempt: row.attempt,
+    max_attempts: row.max_attempts,
+    engine_version: row.engine_version,
+    payload: safeJson<Record<string, unknown>>(row.payload, {}),
+  };
+}
+
+/**
+ * Development worker claim. The API owns the OLTP write, so a worker never
+ * opens the OLTP DuckDB file. The oldest queued job moves to running and the
+ * full pinned payload is returned.
+ */
+export async function claimQueuedJob(
+  db: Kysely<Database>,
+  context: RequestContext
+): Promise<{ job: InternalJob | null }> {
+  const job = await db
+    .selectFrom('job')
+    .selectAll()
+    .where('status', '=', 'queued')
+    .orderBy('queued_at', 'asc')
+    .orderBy('job_id', 'asc')
+    .limit(1)
+    .executeTakeFirst();
+  if (!job) return { job: null };
+
+  const now = new Date();
+  const claimed = await db.transaction().execute(async (trx) => {
+    const update = await trx
+      .updateTable('job')
+      .set({ status: 'running', started_at: now, row_version: job.row_version + 1 })
+      .where('job_id', '=', job.job_id)
+      .where('status', '=', 'queued')
+      .where('row_version', '=', job.row_version)
+      .executeTakeFirst();
+    if (Number(update.numUpdatedRows) === 0) return null;
+
+    const version = await trx
+      .selectFrom('scenario_version')
+      .selectAll()
+      .where('scenario_version_id', '=', job.scenario_version_id)
+      .executeTakeFirstOrThrow();
+    await trx
+      .updateTable('scenario_version')
+      .set({ status: 'running', updated_at: now, row_version: version.row_version + 1 })
+      .where('scenario_version_id', '=', job.scenario_version_id)
+      .execute();
+
+    await writeAudit(trx, {
+      actorSubject: 'system:worker',
+      actorDepartmentCode: null,
+      action: 'job.running',
+      entityType: 'job',
+      entityId: job.job_id,
+      entityVersion: job.row_version + 1,
+      correlationId: context.correlationId,
+      requestId: context.requestId,
+      before: { status: 'queued' },
+      after: { status: 'running' },
+    });
+
+    return trx.selectFrom('job').selectAll().where('job_id', '=', job.job_id).executeTakeFirstOrThrow();
+  });
+
+  return { job: claimed ? toInternalJob(claimed) : null };
 }
 
 export async function listJobs(db: Kysely<Database>, user: AuthUser, query: ListQuery) {

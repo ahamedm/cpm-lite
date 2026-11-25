@@ -9,6 +9,7 @@ import { requireIfMatch } from '../http.js';
 import { runIdempotent } from '../idempotency.js';
 import {
   archiveScenario,
+  compileScenarioCalculationSource,
   createScenario,
   createScenarioVersion,
   getScenario,
@@ -114,6 +115,21 @@ export function registerScenarioRoutes(app: FastifyInstance, deps: RouteDeps): v
     const result = await validateScenarioVersion(db, request.user, scenario_version_id, requestContext(request));
     return sendPayload(reply, result);
   });
+
+  app.post(
+    '/api/v1/scenario-versions/:scenario_version_id/algorithm/compile',
+    { config: { bodySchema: 'CalculationSourceCompileRequest' } },
+    async (request, reply) => {
+      const { scenario_version_id } = request.params as { scenario_version_id: string };
+      const result = await compileScenarioCalculationSource(
+        db,
+        request.user,
+        scenario_version_id,
+        request.body as { calculation_source: unknown }
+      );
+      return sendPayload(reply, result);
+    }
+  );
 
   app.get('/api/v1/scenario-versions/:scenario_version_id/results', async (request, reply) => {
     const { scenario_version_id } = request.params as { scenario_version_id: string };

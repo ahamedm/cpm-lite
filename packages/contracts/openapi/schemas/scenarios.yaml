@@ -140,6 +140,26 @@ ScenarioVersion:
       maxItems: 500
       items:
         $ref: '#/ScenarioAssumption'
+    calculation_plan:
+      oneOf:
+        - $ref: '#/CalculationPlan'
+        - type: 'null'
+    calculation_plan_hash:
+      type: [string, 'null']
+      description: Content hash of the stored calculation plan, if present.
+    calculation_compiler_version:
+      type: [string, 'null']
+      description: Compiler version used when the plan was last validated.
+    calculation_source:
+      oneOf:
+        - $ref: '#/CalculationSource'
+        - type: 'null'
+    calculation_source_hash:
+      type: [string, 'null']
+      description: Content hash of the stored PRQL authoring document, if present.
+    calculation_authoring_version:
+      type: [string, 'null']
+      description: Authoring compiler version that produced the pinned plan.
     validation:
       oneOf:
         - $ref: './common.yaml#/ValidationReport'
@@ -341,6 +361,14 @@ ScenarioCreateRequest:
       maxItems: 500
       items:
         $ref: '#/ScenarioAssumption'
+    calculation_plan:
+      oneOf:
+        - $ref: '#/CalculationPlan'
+        - type: 'null'
+    calculation_source:
+      oneOf:
+        - $ref: '#/CalculationSource'
+        - type: 'null'
 
 ScenarioUpdateRequest:
   type: object
@@ -396,6 +424,14 @@ ScenarioVersionCreateRequest:
       maxItems: 500
       items:
         $ref: '#/ScenarioAssumption'
+    calculation_plan:
+      oneOf:
+        - $ref: '#/CalculationPlan'
+        - type: 'null'
+    calculation_source:
+      oneOf:
+        - $ref: '#/CalculationSource'
+        - type: 'null'
 
 ScenarioVersionUpdateRequest:
   type: object
@@ -431,6 +467,135 @@ ScenarioVersionUpdateRequest:
       maxItems: 500
       items:
         $ref: '#/ScenarioAssumption'
+    calculation_plan:
+      oneOf:
+        - $ref: '#/CalculationPlan'
+        - type: 'null'
+    calculation_source:
+      oneOf:
+        - $ref: '#/CalculationSource'
+        - type: 'null'
+
+CalculationPlan:
+  type: object
+  additionalProperties: true
+  required: [format, grain, pins, stages]
+  properties:
+    format:
+      type: string
+      enum: [cpm-calculation-plan/0]
+    grain:
+      type: array
+      minItems: 1
+      items:
+        type: string
+        pattern: '^[A-Za-z_][A-Za-z0-9_]*$'
+    pins:
+      type: object
+      additionalProperties: true
+      description: Model version, semantic hash, rule versions and compiler version.
+    drivers:
+      type: object
+      additionalProperties: true
+      description: Bound driver and assumption values keyed by driver code.
+    stages:
+      type: array
+      minItems: 1
+      items:
+        type: object
+        additionalProperties: true
+  description: >
+    Canonical, target-neutral calculation plan for a scenario version. The
+    OpenAPI schema documents the envelope; the API performs strict validation
+    of stages, expressions, identifiers, types and driver bindings.
+
+CalculationSource:
+  type: object
+  additionalProperties: true
+  required: [format, source, columns, prql, types, grain, pins, stages]
+  properties:
+    format:
+      type: string
+      enum: [cpm-calculation-source/0]
+    source:
+      type: string
+      pattern: '^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$'
+      description: The governed scan source named by the PRQL from transform.
+    artifact:
+      type: string
+      description: Optional pinned Parquet artifact instead of the live source.
+    columns:
+      type: array
+      minItems: 1
+      items:
+        type: string
+        pattern: '^[A-Za-z_][A-Za-z0-9_]*$'
+    prql:
+      type: string
+      minLength: 1
+      maxLength: 20000
+      description: >
+        PRQL pipeline using from, filter, derive and select. Raw SQL strings,
+        joins, grouping and window functions are rejected.
+    types:
+      type: object
+      additionalProperties:
+        type: string
+      description: Canonical column type for every derived column alias.
+    grain:
+      type: array
+      minItems: 1
+      items:
+        type: string
+    pins:
+      type: object
+      additionalProperties: true
+    drivers:
+      type: object
+      additionalProperties: true
+    stages:
+      type: array
+      items:
+        type: object
+        additionalProperties: true
+      description: >
+        Structured remainder of the plan (allocate, validate and write). Scan,
+        filter and derive stages belong in the PRQL pipeline.
+  description: >
+    PRQL authoring document. The API compiles it into the canonical
+    CalculationPlan and stores the source for lineage; the plan remains the
+    executable artifact.
+
+CalculationSourceCompileRequest:
+  type: object
+  additionalProperties: false
+  required: [calculation_source]
+  properties:
+    calculation_source:
+      $ref: '#/CalculationSource'
+
+CalculationSourceCompileResponse:
+  type: object
+  required:
+    - calculation_plan
+    - calculation_plan_hash
+    - calculation_compiler_version
+    - calculation_source
+    - calculation_source_hash
+    - calculation_authoring_version
+  properties:
+    calculation_plan:
+      $ref: '#/CalculationPlan'
+    calculation_plan_hash:
+      type: string
+    calculation_compiler_version:
+      type: string
+    calculation_source:
+      $ref: '#/CalculationSource'
+    calculation_source_hash:
+      type: string
+    calculation_authoring_version:
+      type: string
 
 ScenarioValidationResponse:
   type: object

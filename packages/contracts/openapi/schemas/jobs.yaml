@@ -56,6 +56,12 @@ JobInputs:
     period_end:
       type: string
       format: date
+    calculation_plan_hash:
+      type: [string, 'null']
+      description: Content hash of the pinned calculation plan, if the scenario has one.
+    calculation_compiler_version:
+      type: [string, 'null']
+      description: Calculation compiler version pinned into the job.
     allocation_strategy:
       type: [string, 'null']
       description: Resolved allocation strategy code; null when the scenario has none.

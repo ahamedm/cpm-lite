@@ -170,6 +170,12 @@ export interface ScenarioVersionTable {
   drivers: string;
   adjustments: string;
   assumptions: string;
+  calculation_plan: string | null;
+  calculation_plan_hash: string | null;
+  calculation_compiler_version: string | null;
+  calculation_source: string | null;
+  calculation_source_hash: string | null;
+  calculation_authoring_version: string | null;
   validation_report: string | null;
   created_by: string;
   created_at: Generated<Timestamp>;

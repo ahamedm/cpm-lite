@@ -92,6 +92,8 @@ export interface ScenarioCreateRequest {
   drivers: ScenarioDriver[];
   adjustments?: ScenarioAdjustment[];
   assumptions?: ScenarioAssumption[];
+  calculation_plan?: Record<string, unknown> | null;
+  calculation_source?: Record<string, unknown> | null;
 }
 
 export interface ScenarioUpdateRequest {
@@ -110,6 +112,8 @@ export interface ScenarioVersionCreateRequest {
   drivers: ScenarioDriver[];
   adjustments?: ScenarioAdjustment[];
   assumptions?: ScenarioAssumption[];
+  calculation_plan?: Record<string, unknown> | null;
+  calculation_source?: Record<string, unknown> | null;
 }
 
 export interface ScenarioVersionUpdateRequest {
@@ -121,6 +125,8 @@ export interface ScenarioVersionUpdateRequest {
   drivers?: ScenarioDriver[];
   adjustments?: ScenarioAdjustment[];
   assumptions?: ScenarioAssumption[];
+  calculation_plan?: Record<string, unknown> | null;
+  calculation_source?: Record<string, unknown> | null;
 }
 
 export interface RuleScopeRequest {

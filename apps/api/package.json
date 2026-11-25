@@ -17,6 +17,7 @@
     "promote-cube-schema": "tsx scripts/promote-cube-schema.ts",
     "backfill-semantic": "tsx scripts/backfill-semantic-models.ts",
     "token": "tsx scripts/mint-token.ts",
+    "worker": "tsx scripts/scenario-worker.ts",
     "test": "tsx --test test/**/*.test.ts"
   },
   "dependencies": {
@@ -33,7 +34,8 @@
     "jsonwebtoken": "9.0.3",
     "kysely": "0.28.19",
     "kysely-duckdb": "0.4.0",
-    "openapi-types": "12.1.3"
+    "openapi-types": "12.1.3",
+    "prql-js": "0.12.1"
   },
   "devDependencies": {
     "@types/jsonwebtoken": "9.0.10",

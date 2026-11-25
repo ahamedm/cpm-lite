@@ -54,6 +54,39 @@ columns and aggregations; arbitrary expressions are rejected.
 
 Follow-up slices: join authoring, templates and a code view.
 
+## Scenario algorithm
+
+The scenario detail page shows the canonical `calculation_plan` and, when the
+algorithm was authored in PRQL, the authoring source and its lineage. The plan is
+read-only once the version leaves `draft`.
+
+Drafts are edited through **Edit algorithm**. PRQL is the primary mode:
+
+- `from`, `filter`, `derive` and `select` compile to the plan's scan, filter and
+  derive stages;
+- every derived column needs an explicit type;
+- source, columns, grain, pins, drivers and the allocate/validate/write stages
+  live in the collapsible **Plan settings** JSON;
+- **Compile preview** calls
+  `POST /scenario-versions/{id}/algorithm/compile` and shows the resulting
+  stages without saving.
+
+**Plan JSON** keeps the canonical `cpm-calculation-plan/0` editor for advanced
+changes. The API compiles and validates the result against the version's pinned
+model version before saving; invalid sources return path-addressed problem
+details in the dialog. Saving does not run the scenario — the existing Validate
+action compiles the plan and evaluates pre-submit rules, and the Run action
+queues the job.
+
+The API stores `calculation_source`, `calculation_source_hash` and
+`calculation_authoring_version` beside the plan. PRQL is authoring lineage; the
+canonical plan is what the worker executes. Raw SQL, joins, grouping and window
+functions are rejected.
+
+Job detail shows the pinned plan hash and compiler version alongside the other
+lineage fields. The Algorithm panel is a read-only view for non-draft versions
+and for users outside the scenario's write scope.
+
 ## Structure
 
 ```
