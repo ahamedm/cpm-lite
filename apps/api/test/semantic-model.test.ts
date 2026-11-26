@@ -335,3 +335,84 @@ test('backfill migrates legacy rows once and is idempotent', async () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('multi-dataset models validate and compile a reference cube join', () => {
+  const definition = {
+    schema_version: '1.1',
+    source: { source_id: 'gold.fact_financials' },
+    access: { row_level_field: 'department_code' },
+    grain: ['department_code'],
+    datasets: [
+      {
+        name: 'dim_department',
+        source: 'gold.dim_department',
+        primary_key: ['department_code'],
+        fields: [
+          { code: 'department_code', name: 'Department code', data_type: 'string', expression: 'department_code' },
+          { code: 'department_name', name: 'Department name', data_type: 'string', expression: 'department_name' },
+        ],
+      },
+    ],
+    dimensions: [
+      { code: 'department_code', name: 'Department', data_type: 'string', expression: 'department_code' },
+      { code: 'department_name', name: 'Department name', data_type: 'string', expression: 'department_name', dataset: 'dim_department' },
+    ],
+    measures: [
+      { code: 'budget_amount', name: 'Budget', aggregation: 'sum', expression: 'budget_amount', format: 'currency', currency_code: 'USD' },
+    ],
+    joins: [
+      {
+        name: 'department',
+        relationship: 'many_to_one',
+        source_dataset: 'fact_financials',
+        target_dataset: 'dim_department',
+        on: [{ source_member: 'department_code', target_member: 'department_code' }],
+      },
+    ],
+  };
+
+  const semantic = semanticModelFromDefinition(definition, identity());
+  assert.equal(semantic.schema_version, '1.1');
+  assert.equal(semantic.datasets.length, 2);
+  assert.equal(semantic.datasets[1]?.name, 'dim_department');
+  assert.equal(semantic.relationships[0]?.target_dataset, 'dim_department');
+  assert.deepEqual(semantic.relationships[0]?.source_fields, ['department_code']);
+  assert.deepEqual(semantic.relationships[0]?.target_fields, ['department_code']);
+  const report = validateSemanticModel(semantic);
+  assert.equal(report.valid, true, JSON.stringify(report.issues));
+
+  const cube = buildCube({
+    model: { ...MODEL, code: 'multi_dataset_budget' },
+    version: { model_version_id: VERSION_ID, version_number: 1, status: 'published', definition },
+    source: { source_id: SOURCE.source_id, columns: SOURCE.columns },
+    sources: [
+      { source_id: SOURCE.source_id, columns: SOURCE.columns },
+      { source_id: 'gold.dim_department', columns: ['department_code', 'department_name'] },
+    ],
+  });
+  assert.deepEqual(cube.cube_names, [
+    'multi_dataset_budget',
+    'multi_dataset_budget__dim_department',
+  ]);
+  assert.match(cube.content, /joins:/);
+  assert.match(cube.content, /relationship: "many_to_one"/);
+  assert.match(cube.content, /sql_table: "gold\.dim_department"/);
+  assert.match(cube.content, /name: "dim_department__department_name"/);
+  assert.match(cube.content, /member: "department_code"/);
+
+  const invalidCardinality = structuredClone(semantic);
+  invalidCardinality.relationships[0]!.cardinality = 'one_to_many';
+  assert.ok(
+    validateSemanticModel(invalidCardinality).issues.some(
+      (issue) => issue.code === 'join_cardinality_unsupported'
+    )
+  );
+
+  const pinned = structuredClone(semantic);
+  pinned.relationships[0]!.pinned_model_version_id = '00000000-0000-0000-0000-000000000001';
+  assert.ok(
+    validateSemanticModel(pinned).issues.some(
+      (issue) => issue.code === 'join_pinned_version_not_supported'
+    )
+  );
+});

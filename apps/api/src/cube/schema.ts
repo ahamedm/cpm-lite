@@ -13,6 +13,7 @@
  * Invariant I5: no thresholds, approvers or allocation values are emitted here.
  */
 
+import { createHash } from 'node:crypto';
 import {
   SEMANTIC_AGGREGATIONS,
   SEMANTIC_FORMATS,
@@ -20,7 +21,7 @@ import {
   IDENTIFIER,
 } from '../semantic/constants.js';
 import { semanticModelFromDefinition } from '../semantic/from-definition.js';
-import type { SemanticModel } from '../semantic/types.js';
+import type { SemanticDataset, SemanticModel } from '../semantic/types.js';
 
 export interface GeneratedCube {
   model_id: string;
@@ -30,9 +31,16 @@ export interface GeneratedCube {
   model_version_id: string;
   version_number: number;
   cube_name: string;
+  /** Every Cube name rendered by this model, including internal reference cubes. */
+  cube_names: string[];
   file_name: string;
   content: string;
   measures: string[];
+}
+
+export interface CubeGenerationSource {
+  source_id: string;
+  columns: string[];
 }
 
 export interface CubeGenerationInput {
@@ -50,10 +58,9 @@ export interface CubeGenerationInput {
     status: string;
     definition: Record<string, unknown>;
   };
-  source: {
-    source_id: string;
-    columns: string[];
-  };
+  source: CubeGenerationSource;
+  /** All dataset sources; defaults to `[source]` for single-dataset models. */
+  sources?: CubeGenerationSource[];
   /** Canonical model; omitted callers are converted from the legacy document. */
   semantic?: SemanticModel;
 }
@@ -142,28 +149,43 @@ export function buildCube(input: CubeGenerationInput): GeneratedCube {
   return compileCube({ ...input, semantic });
 }
 
+function cubeSafeName(value: string): string {
+  const normalized = value
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  const safe = /^[a-z_]/.test(normalized) ? normalized : `c_${normalized}`;
+  if (safe.length <= 64) return safe;
+  const hash = createHash('sha256').update(safe).digest('hex').slice(0, 8);
+  return `${safe.slice(0, 55)}_${hash}`;
+}
+
+function referenceCubeName(modelCode: string, dataset: SemanticDataset): string {
+  return cubeSafeName(`${modelCode}__${dataset.name}`);
+}
+
+function referenceFieldName(dataset: SemanticDataset, fieldName: string): string {
+  return cubeSafeName(`${dataset.name}__${fieldName}`);
+}
+
+function cubeIdentifier(value: string): string {
+  return `"${value.replaceAll('"', '""')}"`;
+}
+
 /** Renders the canonical neutral model as a Cube YAML document. */
 export function compileCube(input: CubeGenerationInput & { semantic: SemanticModel }): GeneratedCube {
   const { model, version, semantic } = input;
-
-  if (semantic.datasets.length !== 1) {
-    throw new CubeSchemaError(
-      `Model ${model.code} must expose exactly one dataset in this phase`
-    );
-  }
-  const dataset = semantic.datasets[0];
-  if (!dataset) {
+  const principal = semantic.datasets[0];
+  if (!principal) {
     throw new CubeSchemaError(`Model ${model.code} has no dataset`);
   }
-
-  const sourceId = dataset.source;
-  if (sourceId !== input.source.source_id) {
+  if (principal.source !== input.source.source_id) {
     throw new CubeSchemaError(
-      `Model ${model.code} reads ${sourceId}, which is not the governed source ${input.source.source_id}`
+      `Model ${model.code} reads ${principal.source}, which is not the governed source ${input.source.source_id}`
     );
   }
-  if (!SOURCE_ID.test(sourceId)) {
-    throw new CubeSchemaError(`Source ${sourceId} is not a schema-qualified table`);
+  if (!SOURCE_ID.test(principal.source)) {
+    throw new CubeSchemaError(`Source ${principal.source} is not a schema-qualified table`);
   }
   if (!CUBE_NAME.test(model.code)) {
     throw new CubeSchemaError(
@@ -176,8 +198,35 @@ export function compileCube(input: CubeGenerationInput & { semantic: SemanticMod
     );
   }
 
-  const available = new Set(input.source.columns);
-  const fields = dataset.fields;
+  const sources = input.sources && input.sources.length > 0 ? input.sources : [input.source];
+  const sourceColumns = new Map(sources.map((source) => [source.source_id, new Set(source.columns)]));
+  const availableFor = (dataset: SemanticDataset): Set<string> => {
+    const available = sourceColumns.get(dataset.source);
+    if (!available) {
+      throw new CubeSchemaError(
+        `Source ${dataset.source} of dataset ${dataset.name} is not available to the Cube compiler`
+      );
+    }
+    return available;
+  };
+
+  const referenceDatasets = semantic.datasets.slice(1);
+  const referenceCubeByName = new Map<string, string>();
+  for (const dataset of referenceDatasets) {
+    if (!SOURCE_ID.test(dataset.source)) {
+      throw new CubeSchemaError(
+        `Source ${dataset.source} of dataset ${dataset.name} is not a schema-qualified table`
+      );
+    }
+    const name = referenceCubeName(model.code, dataset);
+    if (name === model.code || referenceCubeByName.has(dataset.name)) {
+      throw new CubeSchemaError(`Dataset ${dataset.name} maps to a duplicate Cube name`);
+    }
+    referenceCubeByName.set(dataset.name, name);
+    availableFor(dataset);
+  }
+
+  const fields = principal.fields;
   const metrics = semantic.metrics;
   if (fields.length === 0) throw new CubeSchemaError(`Model ${model.code} has no dimensions`);
   if (metrics.length === 0) throw new CubeSchemaError(`Model ${model.code} has no measures`);
@@ -194,6 +243,11 @@ export function compileCube(input: CubeGenerationInput & { semantic: SemanticMod
     memberNames.add(code);
   }
   for (const metric of metrics) {
+    if (metric.dataset !== principal.name) {
+      throw new CubeSchemaError(
+        `Measure ${metric.name} must belong to the principal dataset ${principal.name}`
+      );
+    }
     const code = requiredString(metric.name, 'measures[].code');
     if (!IDENTIFIER.test(code)) {
       throw new CubeSchemaError(`Measure code ${JSON.stringify(code)} is not an identifier`);
@@ -216,12 +270,81 @@ export function compileCube(input: CubeGenerationInput & { semantic: SemanticMod
     );
   }
 
+  const datasetByName = new Map(semantic.datasets.map((dataset) => [dataset.name, dataset]));
+  for (const relationship of semantic.relationships) {
+    const sourceDataset = datasetByName.get(relationship.source_dataset);
+    const targetDataset = datasetByName.get(relationship.target_dataset);
+    if (!sourceDataset || !targetDataset) {
+      throw new CubeSchemaError(
+        `Join ${relationship.name} references an unknown dataset`
+      );
+    }
+    if (sourceDataset.name !== principal.name) {
+      throw new CubeSchemaError(
+        `Join ${relationship.name} must start at the principal dataset ${principal.name}`
+      );
+    }
+    if (targetDataset.name === principal.name) {
+      throw new CubeSchemaError(`Join ${relationship.name} must target a reference dataset`);
+    }
+    if (!referenceCubeByName.has(targetDataset.name)) {
+      throw new CubeSchemaError(
+        `Join ${relationship.name} targets ${targetDataset.name}, which is not a reference dataset`
+      );
+    }
+    if (relationship.cardinality !== 'many_to_one' && relationship.cardinality !== 'one_to_one') {
+      throw new CubeSchemaError(
+        `Join ${relationship.name} must be many_to_one or one_to_one`
+      );
+    }
+    if (relationship.pinned_model_version_id) {
+      throw new CubeSchemaError(
+        `Join ${relationship.name} pins a reference model version; cross-version joins are not in this slice`
+      );
+    }
+    if (
+      relationship.source_fields.length === 0 ||
+      relationship.source_fields.length !== relationship.target_fields.length
+    ) {
+      throw new CubeSchemaError(
+        `Join ${relationship.name} needs the same non-zero number of source and target keys`
+      );
+    }
+  }
+
   const lines: string[] = ['cubes:', `  - name: ${quote(model.code)}`];
   const description = model.description?.trim()
     ? `${model.name}. ${model.description.trim()}`
     : model.name;
   lines.push(`    description: ${quote(description)}`);
-  lines.push(`    sql_table: ${quote(sourceId)}`);
+  lines.push(`    sql_table: ${quote(principal.source)}`);
+
+  const principalFieldsByName = new Map(fields.map((field) => [field.name, field]));
+  if (semantic.relationships.length > 0) {
+    lines.push('    joins:');
+    for (const relationship of semantic.relationships) {
+      const targetDataset = datasetByName.get(relationship.target_dataset)!;
+      const targetCube = referenceCubeByName.get(targetDataset.name)!;
+      const pairs = relationship.source_fields.map((sourceField, index) => {
+        const targetField = relationship.target_fields[index]!;
+        if (!targetDataset.fields.some((field) => field.name === targetField)) {
+          throw new CubeSchemaError(
+            `Join ${relationship.name} target member ${targetField} is not a field of dataset ${targetDataset.name}`
+          );
+        }
+        const sourceExpression = principalFieldsByName.get(sourceField)?.expression.column ?? sourceField;
+        const checkedSource = requiredColumn(
+          sourceExpression,
+          `joins.${relationship.name}.${sourceField}`,
+          availableFor(principal)
+        );
+        return `{CUBE}.${cubeIdentifier(checkedSource)} = {${targetCube}}.${cubeIdentifier(referenceFieldName(targetDataset, targetField))}`;
+      });
+      lines.push(`      - name: ${quote(relationship.name)}`);
+      lines.push(`        relationship: ${quote(relationship.cardinality)}`);
+      lines.push(`        sql: ${quote(pairs.join(' AND '))}`);
+    }
+  }
 
   lines.push('    dimensions:');
   for (const field of fields) {
@@ -229,7 +352,7 @@ export function compileCube(input: CubeGenerationInput & { semantic: SemanticMod
     const expression = requiredColumn(
       field.expression.column,
       `dimensions.${code}.expression`,
-      available
+      availableFor(principal)
     );
     const type = DIMENSION_TYPES[field.datatype];
     if (!type) {
@@ -274,7 +397,7 @@ export function compileCube(input: CubeGenerationInput & { semantic: SemanticMod
       const expression = requiredColumn(
         metric.expression.column,
         `measures.${code}.expression`,
-        available
+        availableFor(principal)
       );
       lines.push(`        sql: ${quote(expression)}`);
     }
@@ -305,6 +428,42 @@ export function compileCube(input: CubeGenerationInput & { semantic: SemanticMod
     '                - "{SECURITY_CONTEXT.department_code}"'
   );
 
+  const referenceCubes: string[] = [];
+  for (const dataset of referenceDatasets) {
+    const cubeName = referenceCubeByName.get(dataset.name)!;
+    const available = availableFor(dataset);
+    if (dataset.fields.length === 0) {
+      throw new CubeSchemaError(`Dataset ${dataset.name} has no fields`);
+    }
+    referenceCubes.push(
+      `  - name: ${quote(cubeName)}`,
+      `    description: ${quote(`Reference dataset ${dataset.name} for ${model.name}`)}`,
+      `    sql_table: ${quote(dataset.source)}`,
+      '    dimensions:'
+    );
+    for (const field of dataset.fields) {
+      const code = referenceFieldName(dataset, field.name);
+      const expression = requiredColumn(
+        field.expression.column,
+        `datasets.${dataset.name}.fields.${field.name}.expression`,
+        available
+      );
+      const type = DIMENSION_TYPES[field.datatype];
+      if (!type) {
+        throw new CubeSchemaError(
+          `Reference field ${field.name} has unsupported data_type ${JSON.stringify(field.datatype)}`
+        );
+      }
+      referenceCubes.push(`      - name: ${quote(code)}`);
+      if (field.label.length > 0) {
+        referenceCubes.push(`        title: ${quote(field.label)}`);
+      }
+      referenceCubes.push(`        sql: ${quote(expression)}`);
+      referenceCubes.push(`        type: ${quote(type)}`);
+    }
+  }
+  lines.push(...referenceCubes);
+
   return {
     model_id: model.model_id,
     model_code: model.code,
@@ -313,6 +472,7 @@ export function compileCube(input: CubeGenerationInput & { semantic: SemanticMod
     model_version_id: version.model_version_id,
     version_number: version.version_number,
     cube_name: model.code,
+    cube_names: [model.code, ...referenceDatasets.map((dataset) => referenceCubeByName.get(dataset.name)!)],
     file_name: `${model.code}.yml`,
     content: `${lines.join('\n')}\n`,
     measures: metrics.map((metric) => metric.name),

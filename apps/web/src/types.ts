@@ -122,6 +122,43 @@ export interface Model {
   etag: string;
 }
 
+export interface ModelDimensionDefinition {
+  code: string;
+  name: string;
+  data_type: string;
+  expression: string;
+  dataset?: string;
+  description?: string | null;
+}
+
+export interface ModelMeasureDefinition {
+  code: string;
+  name: string;
+  aggregation: string;
+  expression: string;
+  format: string;
+  currency_code?: string | null;
+  description?: string | null;
+}
+
+export interface ModelDatasetDefinition {
+  name: string;
+  source: string;
+  primary_key?: string[];
+  fields: ModelDimensionDefinition[];
+  description?: string | null;
+}
+
+export interface ModelJoinDefinition {
+  name: string;
+  relationship: 'many_to_one' | 'one_to_one' | 'one_to_many';
+  source_dataset?: string;
+  target_dataset?: string;
+  on?: Array<{ source_member: string; target_member: string }>;
+  target_model_version_id?: string | null;
+  [key: string]: unknown;
+}
+
 export interface ModelDefinition {
   schema_version: string;
   source?: {
@@ -130,23 +167,11 @@ export interface ModelDefinition {
   access?: {
     row_level_field: string;
   };
-  dimensions: Array<{
-    code: string;
-    name: string;
-    data_type: string;
-    expression: string;
-    description?: string | null;
-  }>;
-  measures: Array<{
-    code: string;
-    name: string;
-    aggregation: string;
-    expression: string;
-    format: string;
-    currency_code?: string | null;
-    description?: string | null;
-  }>;
-  joins?: Array<Record<string, unknown>>;
+  grain?: string[];
+  datasets?: ModelDatasetDefinition[];
+  dimensions: ModelDimensionDefinition[];
+  measures: ModelMeasureDefinition[];
+  joins?: ModelJoinDefinition[];
 }
 
 export interface ModelSourceColumn {

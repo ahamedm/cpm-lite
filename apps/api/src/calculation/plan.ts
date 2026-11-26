@@ -55,6 +55,29 @@ export interface DeriveStage {
   expression: PlanExpr;
 }
 
+export interface JoinKeyPair {
+  /** Column in the current pipeline. */
+  left: string;
+  /** Column in the joined source. */
+  right: string;
+}
+
+export interface JoinColumn {
+  /** Source column to project from the joined table. */
+  name: string;
+  /** Output column name in the pipeline. */
+  as: string;
+}
+
+export interface JoinStage {
+  op: 'join';
+  source: string;
+  alias: string;
+  type: 'left' | 'inner';
+  on: JoinKeyPair[];
+  columns: JoinColumn[];
+}
+
 export interface AllocateStage {
   op: 'allocate';
   pool: string;
@@ -90,6 +113,7 @@ export type PlanStage =
   | ScanStage
   | FilterStage
   | DeriveStage
+  | JoinStage
   | AllocateStage
   | ValidateStage
   | WriteStage;
@@ -445,6 +469,7 @@ function parseStages(
   let sawAllocate = false;
   let sawWrite = false;
   let sawPoolConservation = false;
+  const joinAliases = new Set<string>();
 
   rawStages.forEach((raw, index) => {
     const path = `/stages/${index}`;
@@ -454,6 +479,9 @@ function parseStages(
     if (index === 0 && op !== 'scan') fail('invalid_stage_order', path, 'The first stage must be scan');
     if (index > 0 && op === 'scan') fail('duplicate_scan', path, 'Only one scan stage is allowed');
     if (sawWrite) fail('invalid_stage_order', path, 'write must be the last stage');
+    if (sawAllocate && op === 'join') {
+      fail('invalid_stage_order', path, 'join must precede allocate');
+    }
 
     switch (op) {
       case 'scan': {
@@ -488,6 +516,51 @@ function parseStages(
         const expression = parseExpression(stage.expression, `${path}/expression`, drivers, columns);
         columns.add(name);
         stages.push({ op, name, type, expression });
+        break;
+      }
+      case 'join': {
+        assertAllowedKeys(stage, ['op', 'source', 'alias', 'type', 'on', 'columns'], path);
+        const source = assertQualifiedSource(stage.source, `${path}/source`);
+        const alias = assertIdentifier(stage.alias, `${path}/alias`);
+        if (joinAliases.has(alias)) {
+          fail('duplicate_join_alias', `${path}/alias`, `Join alias "${alias}" is already used`);
+        }
+        joinAliases.add(alias);
+        const joinType =
+          stage.type === 'left' || stage.type === 'inner'
+            ? stage.type
+            : fail('unsupported_join_type', `${path}/type`, 'Join type must be left or inner');
+        const rawOn = expectArray(stage.on, `${path}/on`);
+        const on = rawOn.map((item, pairIndex) => {
+          const pairPath = `${path}/on/${pairIndex}`;
+          const pair = expectRecord(item, pairPath);
+          assertAllowedKeys(pair, ['left', 'right'], pairPath);
+          return {
+            left: assertIdentifier(pair.left, `${pairPath}/left`),
+            right: assertIdentifier(pair.right, `${pairPath}/right`),
+          };
+        });
+        if (new Set(on.map((pair) => pair.left)).size !== on.length) {
+          fail('duplicate_join_key', `${path}/on`, 'Join left keys must be unique');
+        }
+        assertKnownColumns(on.map((pair) => pair.left), columns, `${path}/on`);
+        const rawColumns = expectArray(stage.columns, `${path}/columns`);
+        const joinedColumns = rawColumns.map((item, columnIndex) => {
+          const columnPath = `${path}/columns/${columnIndex}`;
+          const record = expectRecord(item, columnPath);
+          assertAllowedKeys(record, ['name', 'as'], columnPath);
+          const name = assertIdentifier(record.name, `${columnPath}/name`);
+          const as = assertIdentifier(record.as, `${columnPath}/as`);
+          if (columns.has(as)) {
+            fail('duplicate_column', `${columnPath}/as`, `Column "${as}" already exists`);
+          }
+          return { name, as };
+        });
+        if (new Set(joinedColumns.map((column) => column.as)).size !== joinedColumns.length) {
+          fail('duplicate_column', `${path}/columns`, 'Joined output columns must be unique');
+        }
+        for (const column of joinedColumns) columns.add(column.as);
+        stages.push({ op, source, alias, type: joinType, on, columns: joinedColumns });
         break;
       }
       case 'allocate': {

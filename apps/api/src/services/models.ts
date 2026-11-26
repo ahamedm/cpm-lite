@@ -16,7 +16,6 @@ import { writeAudit, writeOutbox } from '../audit.js';
 import { semanticModelHash } from '../semantic/canonical.js';
 import { semanticModelFromDefinition } from '../semantic/from-definition.js';
 import { loadSemanticModel, writeSemanticModel } from '../semantic/repository.js';
-import { SEMANTIC_SCHEMA_VERSION } from '../semantic/types.js';
 import { validateSemanticModel } from '../semantic/validate.js';
 import {
   getModelWithLatest,
@@ -153,7 +152,7 @@ export async function createModel(
         published_at: null,
         superseded_by_version_id: null,
         row_version: 1,
-        semantic_schema_version: SEMANTIC_SCHEMA_VERSION,
+        semantic_schema_version: semantic.schema_version,
         semantic_hash: semanticHash,
       })
       .execute();
@@ -389,7 +388,7 @@ export async function createModelVersion(
         published_at: null,
         superseded_by_version_id: null,
         row_version: 1,
-        semantic_schema_version: SEMANTIC_SCHEMA_VERSION,
+        semantic_schema_version: semantic.schema_version,
         semantic_hash: semanticHash,
       })
       .execute();
@@ -450,7 +449,7 @@ export async function updateModelVersion(
         status: 'draft',
         validation_report: null,
         row_version: version.row_version + 1,
-        semantic_schema_version: SEMANTIC_SCHEMA_VERSION,
+        semantic_schema_version: semantic.schema_version,
         semantic_hash: semanticHash,
       })
       .where('model_version_id', '=', modelVersionId)

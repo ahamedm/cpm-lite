@@ -1,9 +1,9 @@
 # ADR 0007 — Derived columns and reference-model joins
 
-- **Status:** Proposed (not implemented; offline review pending)
+- **Status:** Proposed — the composition direction is accepted in ADR 0011 (model-level multi-dataset, A1 MVP); the derived-column AST and reference-join details remain to be implemented.
 - **Date:** 2026-11-04
 - **Deciders:** CPM Lite engineering, FP&A, Data Engineering
-- **Related:** PRD §4.1, §4.2, §5.1, §6.1, §6.2; C4 `api`, `cube`, `olap`; ADR 0001, ADR 0002, ADR 0004, ADR 0006; design note `docs/design/derived-columns-and-reference-model-joins.md`
+- **Related:** PRD §4.1, §4.2, §5.1, §6.1, §6.2; C4 `api`, `cube`, `olap`; ADR 0001, ADR 0002, ADR 0004, ADR 0006, ADR 0011; design note `docs/design/derived-columns-and-reference-model-joins.md`; analysis `docs/design/scenario-multi-model-composition.md`
 
 ## Context
 

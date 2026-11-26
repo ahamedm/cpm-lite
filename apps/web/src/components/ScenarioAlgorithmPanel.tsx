@@ -3,7 +3,9 @@ import { useMutation } from '@tanstack/react-query';
 import { Braces, Eye, EyeOff, Pencil, Plus, X } from 'lucide-react';
 import { useAuth } from '../auth';
 import { compileCalculationSource, updateScenarioVersion } from '../api';
+import { useModelVersion } from '../queries';
 import type {
+  CalculationPlan,
   CalculationSourceCompileResponse,
   ScenarioVersion,
   ValidationIssue,
@@ -23,6 +25,7 @@ import {
   useToast,
 } from './ui';
 import {
+  authoringSourceFromPlan,
   authoringSourceFromVersion,
   buildSource,
   settingsJsonFromSource,
@@ -52,6 +55,17 @@ function isPlanIssue(issue: ValidationIssue): boolean {
   );
 }
 
+function parsePlanJson(value: string): CalculationPlan | null {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
+    const plan = parsed as CalculationPlan;
+    return Array.isArray(plan.grain) && Array.isArray(plan.stages) ? plan : null;
+  } catch {
+    return null;
+  }
+}
+
 export function ScenarioAlgorithmPanel({
   version,
   etag,
@@ -65,9 +79,12 @@ export function ScenarioAlgorithmPanel({
 }) {
   const { token } = useAuth();
   const { push } = useToast();
+  const modelVersionQuery = useModelVersion(token, version.model_version_id);
+  const modelDefinition = modelVersionQuery.data?.data.definition ?? null;
   const [jsonOpen, setJsonOpen] = useState(false);
   const [prqlOpen, setPrqlOpen] = useState(false);
   const [editorOpen, setEditorOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [mode, setMode] = useState<'prql' | 'json'>('prql');
   const [draftJson, setDraftJson] = useState('');
   const [draftPrql, setDraftPrql] = useState('');
@@ -95,17 +112,35 @@ export function ScenarioAlgorithmPanel({
         : 'not_validated';
 
   function openEditor(nextMode: 'prql' | 'json') {
-    const initial = authoringSourceFromVersion(version);
+    const initial = authoringSourceFromVersion(version, modelDefinition);
     setDraftPrql(initial.prql);
     setSettingsJson(settingsJsonFromSource(initial));
     setTypeRows(Object.entries(initial.types).map(([name, type]) => ({ name, type })));
     setDraftJson(plan ? JSON.stringify(plan, null, 2) : '');
     setPreview(null);
     setJsonError(null);
+    setSettingsOpen(!hasAlgorithm);
     setMode(nextMode);
     compile.reset();
     save.reset();
     setEditorOpen(true);
+  }
+
+  function changeMode(nextMode: 'prql' | 'json') {
+    if (nextMode === mode) return;
+    if (nextMode === 'prql') {
+      // A pasted plan is the authoritative description of the algorithm; use
+      // it to fill the PRQL settings so the two tabs cannot disagree on save.
+      const parsed = parsePlanJson(draftJson);
+      if (parsed) {
+        const derived = authoringSourceFromPlan(parsed);
+        setDraftPrql(derived.prql);
+        setSettingsJson(settingsJsonFromSource(derived));
+        setTypeRows(Object.entries(derived.types).map(([name, type]) => ({ name, type })));
+      }
+    }
+    setPreview(null);
+    setMode(nextMode);
   }
 
   function editorSource() {
@@ -200,7 +235,12 @@ export function ScenarioAlgorithmPanel({
             }
             action={
               editable ? (
-                <Button variant="primary" icon={Plus} onClick={() => openEditor('prql')}>
+                <Button
+                  variant="primary"
+                  icon={Plus}
+                  loading={modelVersionQuery.isPending}
+                  onClick={() => openEditor('prql')}
+                >
                   Add algorithm
                 </Button>
               ) : undefined
@@ -418,8 +458,8 @@ export function ScenarioAlgorithmPanel({
         title="Calculation algorithm"
         description={
           mode === 'prql'
-            ? 'Write the row-level algorithm in PRQL. The API compiles it into the canonical plan before saving.'
-            : 'Edit the canonical plan directly. The API validates and compiles it against this model version.'
+            ? 'Write the row-level pipeline in PRQL. Plan settings supplies the scan columns, grain, pins, drivers and stages; the API compiles both into the canonical plan before saving.'
+            : 'Edit the canonical cpm-calculation-plan/0 directly. This tab is saved instead of the PRQL source.'
         }
         size="lg"
         footer={
@@ -464,14 +504,14 @@ export function ScenarioAlgorithmPanel({
           <Button
             size="sm"
             variant={mode === 'prql' ? 'primary' : 'ghost'}
-            onClick={() => setMode('prql')}
+            onClick={() => changeMode('prql')}
           >
             PRQL
           </Button>
           <Button
             size="sm"
             variant={mode === 'json' ? 'primary' : 'ghost'}
-            onClick={() => setMode('json')}
+            onClick={() => changeMode('json')}
           >
             Plan JSON
           </Button>
@@ -577,12 +617,16 @@ export function ScenarioAlgorithmPanel({
               )}
             </div>
 
-            <details className="algorithm-settings">
+            <details
+              className="algorithm-settings"
+              open={settingsOpen}
+              onToggle={(event) => setSettingsOpen(event.currentTarget.open)}
+            >
               <summary>Plan settings</summary>
               <p className="fineprint">
-                Source, columns, grain, pins, drivers and the allocate/validate/write stages.
-                PRQL covers the row-level pipeline. New algorithm? Declare at least one scan
-                column, the grain and a write stage here.
+                Prefilled from the pinned model version. Scan columns, grain, pins, drivers and
+                the allocate/validate/write stages live here; PRQL covers only the row-level
+                pipeline.
               </p>
               <Field label="Settings JSON" htmlFor="algorithm-settings">
                 <Textarea

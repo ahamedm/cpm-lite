@@ -161,6 +161,7 @@ export class ValkeyCubeSchemaStore implements CubeSchemaStore {
         model_version_id: entry.model_version_id,
         version_number: entry.version_number,
         cube_name: entry.cube_name,
+        cube_names: Array.isArray(entry.cube_names) ? entry.cube_names : [entry.cube_name],
         file_name: entry.file_name,
         content,
         measures: Array.isArray(entry.measures) ? entry.measures : [],

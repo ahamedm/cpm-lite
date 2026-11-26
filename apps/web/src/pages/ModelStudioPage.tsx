@@ -7,6 +7,7 @@ import {
   ClipboardCheck,
   Columns3,
   Database,
+  Link2,
   Plus,
   Rows3,
   Search,
@@ -33,7 +34,7 @@ import {
   useToast,
 } from '../components/ui';
 
-type StepId = 'source' | 'grain' | 'fields' | 'access' | 'review';
+type StepId = 'source' | 'grain' | 'fields' | 'references' | 'access' | 'review';
 type FieldRole = 'dimension' | 'measure';
 
 interface FieldState {
@@ -44,10 +45,24 @@ interface FieldState {
   format: string;
 }
 
+interface ReferenceFieldState {
+  enabled: boolean;
+  label: string;
+}
+
+interface ReferenceState {
+  sourceId: string;
+  name: string;
+  sourceMember: string;
+  targetMember: string;
+  exposed: Record<string, ReferenceFieldState>;
+}
+
 const STEPS: Array<{ id: StepId; label: string; detail: string; icon: typeof Database }> = [
   { id: 'source', label: 'Source', detail: 'Choose governed data', icon: Database },
   { id: 'grain', label: 'Grain', detail: 'Confirm one row', icon: Rows3 },
   { id: 'fields', label: 'Fields', detail: 'Dimensions and measures', icon: Columns3 },
+  { id: 'references', label: 'References', detail: 'Optional lookup', icon: Link2 },
   { id: 'access', label: 'Access', detail: 'Department scope', icon: ShieldCheck },
   { id: 'review', label: 'Review', detail: 'Name and create', icon: ClipboardCheck },
 ];
@@ -92,12 +107,25 @@ function initialFields(source: ModelSource): Record<string, FieldState> {
   );
 }
 
+/** Must match the server's dataset naming so preview and Cube resolves agree. */
+function datasetNameFromSource(sourceId: string): string {
+  const tail = sourceId.split('.').pop() ?? sourceId;
+  const normalized = tail
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  if (!normalized) return 'dataset';
+  return /^[a-z_]/.test(normalized) ? normalized : `d_${normalized}`;
+}
+
 function buildDefinition(
   source: ModelSource,
   fields: Record<string, FieldState>,
-  accessField: string
+  accessField: string,
+  reference: ReferenceState | null,
+  referenceSource: ModelSource | null
 ): ModelDefinition {
-  const dimensions: ModelDefinition['dimensions'] = [];
+  const factDimensions: ModelDefinition['dimensions'] = [];
   const measures: ModelDefinition['measures'] = [];
   for (const column of source.columns) {
     const state = fields[column.name];
@@ -112,7 +140,7 @@ function buildDefinition(
         currency_code: state.format === 'currency' ? 'USD' : null,
       });
     } else {
-      dimensions.push({
+      factDimensions.push({
         code: column.name,
         name: state.label || column.label,
         data_type: column.data_type,
@@ -120,10 +148,61 @@ function buildDefinition(
       });
     }
   }
+
+  const dimensions = [...factDimensions];
+  let datasets: ModelDefinition['datasets'];
+  let joins: ModelDefinition['joins'];
+  if (
+    reference &&
+    referenceSource &&
+    reference.name.trim() &&
+    reference.sourceMember &&
+    reference.targetMember
+  ) {
+    const factDataset = datasetNameFromSource(source.source_id);
+    const factCodes = new Set(factDimensions.map((dimension) => dimension.code));
+    const referenceFields = referenceSource.columns.map((column) => ({
+      code: column.name,
+      name: column.label,
+      data_type: column.data_type,
+      expression: column.name,
+    }));
+    for (const column of referenceSource.columns) {
+      const exposed = reference.exposed[column.name];
+      if (!exposed?.enabled || factCodes.has(column.name)) continue;
+      dimensions.push({
+        code: column.name,
+        name: exposed.label || column.label,
+        data_type: column.data_type,
+        expression: column.name,
+        dataset: reference.name,
+      });
+    }
+    datasets = [
+      {
+        name: reference.name,
+        source: reference.sourceId,
+        primary_key: [reference.targetMember],
+        fields: referenceFields,
+      },
+    ];
+    joins = [
+      {
+        name: reference.name,
+        relationship: 'many_to_one',
+        source_dataset: factDataset,
+        target_dataset: reference.name,
+        on: [{ source_member: reference.sourceMember, target_member: reference.targetMember }],
+      },
+    ];
+  }
+
   return {
-    schema_version: '1.0',
+    schema_version: datasets ? '1.1' : '1.0',
     source: { source_id: source.source_id },
     access: { row_level_field: accessField },
+    ...(datasets ? { datasets } : {}),
+    ...(joins ? { joins } : {}),
     dimensions,
     measures,
   };
@@ -163,7 +242,11 @@ export function ModelStudioPage() {
   const { push } = useToast();
   const sourcesQuery = useModelSources(token);
   const meQuery = useMe(token);
-  const source = sourcesQuery.data?.data.data[0] ?? null;
+  const allSources = sourcesQuery.data?.data.data ?? [];
+  const source = allSources[0] ?? null;
+  const referenceSources = allSources.filter(
+    (candidate) => candidate.source_id !== source?.source_id
+  );
   const isSteward = Boolean(meQuery.data?.data.roles.some((role) => role === 'steward' || role === 'admin'));
   const canGlobal = Boolean(
     isSteward || meQuery.data?.data.roles.includes('data_engineer')
@@ -174,6 +257,7 @@ export function ModelStudioPage() {
   const [fields, setFields] = useState<Record<string, FieldState>>({});
   const [grainConfirmed, setGrainConfirmed] = useState(false);
   const [accessField, setAccessField] = useState('department_code');
+  const [reference, setReference] = useState<ReferenceState | null>(null);
   const [previewDepartment, setPreviewDepartment] = useState('');
   const [groupBy, setGroupBy] = useState<string[]>(['department_code']);
   const [fieldSearch, setFieldSearch] = useState('');
@@ -189,22 +273,56 @@ export function ModelStudioPage() {
     setFields(initialFields(source));
     setGrainConfirmed(false);
     setAccessField('department_code');
+    setReference(null);
     setGroupBy(['department_code']);
     setStep('source');
   }, [source]);
 
+  const factDimensions = useMemo(() => {
+    if (!source) return [] as ModelDefinition['dimensions'];
+    const selected: ModelDefinition['dimensions'] = [];
+    for (const column of source.columns) {
+      const state = fields[column.name];
+      if (!state?.enabled || state.role === 'measure') continue;
+      selected.push({
+        code: column.name,
+        name: state.label || column.label,
+        data_type: column.data_type,
+        expression: column.name,
+      });
+    }
+    return selected;
+  }, [source, fields]);
+  const referenceSource = reference
+    ? referenceSources.find((candidate) => candidate.source_id === reference.sourceId) ?? null
+    : null;
+  const referenceReady =
+    !reference ||
+    Boolean(
+      reference.name.trim() &&
+        reference.sourceMember &&
+        reference.targetMember &&
+        referenceSource &&
+        Object.values(reference.exposed).some((field) => field.enabled)
+    );
+
   const definition = useMemo(
-    () => (source ? buildDefinition(source, fields, accessField) : null),
-    [source, fields, accessField]
+    () =>
+      source
+        ? buildDefinition(source, fields, accessField, reference, referenceSource)
+        : null,
+    [source, fields, accessField, reference, referenceSource]
   );
   const dimensions = definition?.dimensions ?? [];
   const measures = definition?.measures ?? [];
+  const referenceDimensions = dimensions.filter((dimension) => dimension.dataset);
   const activeGroupBy = useMemo(
     () => groupBy.filter((codeValue) => dimensions.some((dimension) => dimension.code === codeValue)).slice(0, 3),
     [groupBy, dimensions]
   );
-  const fieldReady = dimensions.length > 0 && measures.length > 0;
-  const accessReady = Boolean(accessField) && dimensions.some((dimension) => dimension.code === accessField);
+  const fieldReady = factDimensions.length > 0 && measures.length > 0;
+  const accessReady =
+    Boolean(accessField) && factDimensions.some((dimension) => dimension.code === accessField);
   const previewMeasures = useMemo(() => measures.slice(0, 3).map((measure) => measure.code), [measures]);
 
   const previewBody = useMemo(() => {
@@ -262,9 +380,11 @@ export function ModelStudioPage() {
         ? grainConfirmed
         : step === 'fields'
           ? fieldReady
-          : step === 'access'
-            ? accessReady
-            : Boolean(name.trim()) && fieldReady && accessReady && grainConfirmed && Boolean(previewData) && !previewError;
+          : step === 'references'
+            ? referenceReady
+            : step === 'access'
+              ? accessReady
+              : Boolean(name.trim()) && fieldReady && referenceReady && accessReady && grainConfirmed && Boolean(previewData) && !previewError;
   const updateField = (nameValue: string, patch: Partial<FieldState>) => {
     setFields((current) => {
       const existing = current[nameValue];
@@ -294,6 +414,45 @@ export function ModelStudioPage() {
           : [...current, codeValue]
     );
   };
+  function chooseReference(sourceId: string) {
+    if (!sourceId) {
+      setReference(null);
+      return;
+    }
+    const candidate = referenceSources.find((entry) => entry.source_id === sourceId);
+    if (!candidate) {
+      setReference(null);
+      return;
+    }
+    const factCodes = new Set(factDimensions.map((dimension) => dimension.code));
+    const defaultFact =
+      factDimensions.find((dimension) =>
+        candidate.columns.some((column) => column.name === dimension.expression)
+      ) ?? factDimensions[0];
+    const defaultTarget =
+      candidate.columns.find((column) => column.name === defaultFact?.expression) ??
+      candidate.columns[0];
+    const exposed: Record<string, ReferenceFieldState> = {};
+    for (const column of candidate.columns) {
+      if (factCodes.has(column.name) || column.name === defaultTarget?.name) continue;
+      if (column.name.endsWith('_name') || column.name === 'period' || column.name === 'month_name') {
+        exposed[column.name] = { enabled: true, label: column.label };
+      }
+    }
+    if (Object.keys(exposed).length === 0) {
+      const fallback = candidate.columns.find(
+        (column) => column.name !== defaultTarget?.name && !factCodes.has(column.name)
+      );
+      if (fallback) exposed[fallback.name] = { enabled: true, label: fallback.label };
+    }
+    setReference({
+      sourceId,
+      name: datasetNameFromSource(sourceId),
+      sourceMember: defaultFact?.code ?? '',
+      targetMember: defaultTarget?.name ?? '',
+      exposed,
+    });
+  }
   const goNext = () => {
     if (step === 'review') {
       if (canContinue) create.mutate();
@@ -350,9 +509,11 @@ export function ModelStudioPage() {
                       ? grainConfirmed
                       : item.id === 'fields'
                         ? fieldReady
-                        : item.id === 'access'
-                          ? accessReady
-                          : false);
+                        : item.id === 'references'
+                          ? referenceReady
+                          : item.id === 'access'
+                            ? accessReady
+                            : false);
                 return (
                   <button
                     key={item.id}
@@ -595,6 +756,218 @@ export function ModelStudioPage() {
               </Panel>
             ) : null}
 
+            {step === 'references' ? (
+              <Panel
+                title="Reference data"
+                description="Add one governed lookup. The join is many-to-one and the reference key must be unique."
+              >
+                {referenceSources.length === 0 ? (
+                  <EmptyState
+                    icon={Link2}
+                    title="No reference source available"
+                    description="The governed catalog has no additional source to join. Continue without a reference."
+                  />
+                ) : (
+                  <>
+                    <Field
+                      label="Reference source"
+                      htmlFor="studio-reference-source"
+                      hint="Optional. A governed dimension or lookup table."
+                    >
+                      <Select
+                        id="studio-reference-source"
+                        value={reference?.sourceId ?? ''}
+                        onChange={(event) => chooseReference(event.target.value)}
+                      >
+                        <option value="">No reference</option>
+                        {referenceSources.map((candidate) => (
+                          <option key={candidate.source_id} value={candidate.source_id}>
+                            {candidate.name} · {candidate.source_id}
+                          </option>
+                        ))}
+                      </Select>
+                    </Field>
+
+                    {reference && referenceSource ? (
+                      <>
+                        <div className="form-grid">
+                          <Field
+                            label="Dataset code"
+                            htmlFor="studio-reference-name"
+                            hint="Used by joins and field lineage."
+                          >
+                            <Input
+                              id="studio-reference-name"
+                              value={reference.name}
+                              onChange={(event) =>
+                                setReference({ ...reference, name: event.target.value })
+                              }
+                            />
+                          </Field>
+                          <Field
+                            label="Join from"
+                            htmlFor="studio-reference-source-member"
+                            hint="A dimension on the principal source."
+                          >
+                            <Select
+                              id="studio-reference-source-member"
+                              value={reference.sourceMember}
+                              onChange={(event) =>
+                                setReference({ ...reference, sourceMember: event.target.value })
+                              }
+                            >
+                              {factDimensions.map((dimension) => (
+                                <option key={dimension.code} value={dimension.code}>
+                                  {dimension.name} · {dimension.code}
+                                </option>
+                              ))}
+                            </Select>
+                          </Field>
+                          <Field
+                            label="Join to"
+                            htmlFor="studio-reference-target-member"
+                            hint="The unique key on the reference source."
+                          >
+                            <Select
+                              id="studio-reference-target-member"
+                              value={reference.targetMember}
+                              onChange={(event) =>
+                                setReference({ ...reference, targetMember: event.target.value })
+                              }
+                            >
+                              {referenceSource.columns.map((column) => (
+                                <option key={column.name} value={column.name}>
+                                  {column.label} · {column.name}
+                                </option>
+                              ))}
+                            </Select>
+                          </Field>
+                        </div>
+
+                        <div className="studio-table-heading">
+                          <h3>Exposed fields</h3>
+                          <p>Reference fields become dimensions. The join key stays a key unless you expose it.</p>
+                        </div>
+                        <div className="table-wrap">
+                          <table className="data-table data-table--compact">
+                            <thead>
+                              <tr>
+                                <th>Expose</th>
+                                <th>Field</th>
+                                <th>Label</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {referenceSource.columns.map((column) => {
+                                const field = reference.exposed[column.name] ?? {
+                                  enabled: false,
+                                  label: column.label,
+                                };
+                                const collision = factDimensions.some(
+                                  (dimension) => dimension.code === column.name
+                                );
+                                return (
+                                  <tr key={column.name}>
+                                    <td>
+                                      <input
+                                        type="checkbox"
+                                        aria-label={`Expose ${column.label}`}
+                                        checked={field.enabled}
+                                        disabled={collision}
+                                        onChange={(event) =>
+                                          setReference({
+                                            ...reference,
+                                            exposed: {
+                                              ...reference.exposed,
+                                              [column.name]: {
+                                                ...field,
+                                                enabled: event.target.checked,
+                                              },
+                                            },
+                                          })
+                                        }
+                                      />
+                                    </td>
+                                    <td>
+                                      <span className="mono">{column.name}</span>
+                                      <span className="cell-sub">
+                                        {column.label}
+                                        {column.name === reference.targetMember ? ' · join key' : ''}
+                                        {collision ? ' · conflicts with a principal field' : ''}
+                                      </span>
+                                    </td>
+                                    <td>
+                                      <Input
+                                        aria-label={`Label for ${column.name}`}
+                                        value={field.label}
+                                        disabled={!field.enabled || collision}
+                                        onChange={(event) =>
+                                          setReference({
+                                            ...reference,
+                                            exposed: {
+                                              ...reference.exposed,
+                                              [column.name]: {
+                                                ...field,
+                                                label: event.target.value,
+                                              },
+                                            },
+                                          })
+                                        }
+                                      />
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+
+                        {referenceDimensions.length > 0 ? (
+                          <div className="studio-groupby">
+                            <div className="studio-table-heading">
+                              <h3>Preview grouping</h3>
+                              <p>Include a reference field in the live preview.</p>
+                            </div>
+                            <div className="chip-row">
+                              {referenceDimensions.map((dimension) => (
+                                <button
+                                  key={dimension.code}
+                                  type="button"
+                                  className={`choice-chip ${activeGroupBy.includes(dimension.code) ? 'choice-chip--active' : ''}`}
+                                  aria-pressed={activeGroupBy.includes(dimension.code)}
+                                  onClick={() => toggleGroup(dimension.code)}
+                                >
+                                  {dimension.name}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
+
+                        <p className="studio-note">
+                          The reference key must be unique. The API rejects duplicate keys before a job writes a result.
+                        </p>
+                        <div className="studio-actions">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            icon={Trash2}
+                            onClick={() => setReference(null)}
+                          >
+                            Remove reference
+                          </Button>
+                        </div>
+                      </>
+                    ) : (
+                      <p className="studio-note">
+                        Continue without a reference, or choose a source to expose joined labels and attributes.
+                      </p>
+                    )}
+                  </>
+                )}
+              </Panel>
+            ) : null}
+
             {step === 'access' ? (
               <Panel title="Access" description="Department scope is enforced by the API and Cube, not by hiding fields.">
                 <div className="form-grid">
@@ -687,11 +1060,21 @@ export function ModelStudioPage() {
                     <div><dt>Grain</dt><dd>{source.grain}</dd></div>
                     <div><dt>Dimensions</dt><dd>{dimensions.length}</dd></div>
                     <div><dt>Measures</dt><dd>{measures.length}</dd></div>
+                    <div><dt>Reference fields</dt><dd>{referenceDimensions.length}</dd></div>
+                    <div><dt>Reference join</dt><dd className="mono small">{reference && referenceSource ? `${reference.name} · many_to_one` : 'None'}</dd></div>
                     <div><dt>Access field</dt><dd className="mono">{accessField}</dd></div>
                     <div><dt>Scope</dt><dd>{isSteward && previewDepartment ? titleCase(previewDepartment) : titleCase(meQuery.data?.data.department_code ?? 'Department')}</dd></div>
                   </div>
                   <div className="studio-review-fields">
-                    {dimensions.map((dimension) => <span className="studio-review-chip" key={dimension.code}>{dimension.name}</span>)}
+                    {dimensions.map((dimension) => (
+                      <span
+                        className="studio-review-chip"
+                        key={`${dimension.dataset ?? 'fact'}-${dimension.code}`}
+                        title={dimension.dataset ? `Reference: ${dimension.dataset}` : undefined}
+                      >
+                        {dimension.name}{dimension.dataset ? ' · ref' : ''}
+                      </span>
+                    ))}
                     {measures.map((measure) => <span className="studio-review-chip studio-review-chip--measure" key={measure.code}>{measure.name}</span>)}
                   </div>
                 </Panel>
@@ -699,8 +1082,9 @@ export function ModelStudioPage() {
                   <ul className="studio-checks">
                     <CheckLine ok={Boolean(source)} label="Governed source loaded" />
                     <CheckLine ok={grainConfirmed} label="Grain confirmed" />
-                    <CheckLine ok={dimensions.length > 0} label="At least one dimension" />
+                    <CheckLine ok={factDimensions.length > 0} label="At least one principal dimension" />
                     <CheckLine ok={measures.length > 0} label="At least one measure" />
+                    <CheckLine ok={referenceReady} label="Reference join complete or skipped" />
                     <CheckLine ok={accessReady} label="Department access field selected" />
                     <CheckLine ok={Boolean(previewData)} label="Authorized preview returned rows" />
                   </ul>

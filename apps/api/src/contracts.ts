@@ -8,6 +8,8 @@ export interface ModelDefinition {
   access?: {
     row_level_field: string;
   };
+  grain?: string[];
+  datasets?: JsonObject[];
   dimensions: JsonObject[];
   measures: JsonObject[];
   joins?: JsonObject[];

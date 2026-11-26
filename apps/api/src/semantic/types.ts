@@ -12,6 +12,8 @@
 
 export const SEMANTIC_MODEL_FORMAT = 'cpm-semantic-model/1';
 export const SEMANTIC_SCHEMA_VERSION = '1.0';
+export const SEMANTIC_SCHEMA_VERSION_MULTI_DATASET = '1.1';
+export type SemanticSchemaVersion = '1.0' | '1.1';
 export const DEFAULT_SOURCE_ID = 'gold.fact_financials';
 
 export type SemanticDataType = 'string' | 'integer' | 'decimal' | 'date' | 'boolean';
@@ -84,7 +86,7 @@ export interface SemanticExtensions {
 
 export interface SemanticModel {
   format: typeof SEMANTIC_MODEL_FORMAT;
-  schema_version: typeof SEMANTIC_SCHEMA_VERSION;
+  schema_version: SemanticSchemaVersion;
   /** Model code; the stable business identifier. */
   name: string;
   label: string;

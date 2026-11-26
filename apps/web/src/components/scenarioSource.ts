@@ -2,8 +2,11 @@ import type {
   CalculationPlan,
   CalculationPlanStage,
   CalculationSource,
+  ModelDefinition,
   ScenarioVersion,
 } from '../types';
+
+const SAFE_COLUMN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -126,7 +129,7 @@ function structuredStages(plan: CalculationPlan): CalculationPlanStage[] {
   );
 }
 
-function sourceFromPlan(version: ScenarioVersion, plan: CalculationPlan): CalculationSource {
+export function authoringSourceFromPlan(plan: CalculationPlan): CalculationSource {
   const scan = plan.stages.find((stage) => stage.op === 'scan');
   const write = plan.stages.find((stage) => stage.op === 'write');
   const filters = plan.stages.filter((stage) => stage.op === 'filter');
@@ -160,27 +163,60 @@ function sourceFromPlan(version: ScenarioVersion, plan: CalculationPlan): Calcul
   };
 }
 
-export function authoringSourceFromVersion(version: ScenarioVersion): CalculationSource {
-  if (version.calculation_source) return version.calculation_source;
-  if (version.calculation_plan) return sourceFromPlan(version, version.calculation_plan);
+/**
+ * Seed a compilable authoring document for a draft with no algorithm yet.
+ * Scan columns and grain are taken from the pinned model version so the first
+ * compile does not fail on empty arrays or a column the model does not expose.
+ */
+export function defaultSourceFromModel(
+  version: ScenarioVersion,
+  definition?: ModelDefinition | null
+): CalculationSource {
+  const source = definition?.source?.source_id ?? 'gold.fact_financials';
+  const dimensionColumns = [
+    ...new Set(
+      (definition?.dimensions ?? [])
+        .map((dimension) => dimension.expression)
+        .filter((expression) => SAFE_COLUMN.test(expression))
+    ),
+  ];
+  const measureColumns = [
+    ...new Set(
+      (definition?.measures ?? [])
+        .map((measure) => measure.expression)
+        .filter((expression) => SAFE_COLUMN.test(expression))
+    ),
+  ];
+  const declared = [...new Set([...dimensionColumns, ...measureColumns])];
+  const columns = declared.length > 0 ? declared : ['department_code', 'budget_amount'];
+  const grain = dimensionColumns.length > 0 ? dimensionColumns : [columns[0]!];
+
   return {
     format: 'cpm-calculation-source/0',
-    source: 'gold.fact_financials',
-    columns: [],
-    prql: `from gold.fact_financials
-filter period >= @2026-01-01
-derive adjusted_budget = budget_amount * (1 + growth_pct)
-select {department_code, adjusted_budget}`,
-    types: { adjusted_budget: 'decimal(18,2)' },
-    grain: [],
+    source,
+    columns,
+    prql: `from ${source}\nselect {${columns.join(', ')}}`,
+    types: {},
+    grain,
     pins: {
       model_version_id: version.model_version_id,
-      semantic_hash: '',
+      // Legacy model versions predate stored semantic hashes. The enforced pin
+      // is model_version_id; keep this required field non-empty.
+      semantic_hash: `sha256:model-version-${version.model_version_id}`,
       rule_version_ids: [],
     },
     drivers: {},
-    stages: [{ op: 'write', format: 'parquet' }],
+    stages: [{ op: 'write', format: 'parquet', measures: columns }],
   };
+}
+
+export function authoringSourceFromVersion(
+  version: ScenarioVersion,
+  definition?: ModelDefinition | null
+): CalculationSource {
+  if (version.calculation_source) return version.calculation_source;
+  if (version.calculation_plan) return authoringSourceFromPlan(version.calculation_plan);
+  return defaultSourceFromModel(version, definition);
 }
 
 export function settingsJsonFromSource(source: CalculationSource): string {
@@ -200,6 +236,18 @@ export function buildSource(
     throw new Error('Plan settings must be valid JSON.');
   }
   if (!isRecord(settings)) throw new Error('Plan settings must be a JSON object.');
+  const columns = Array.isArray(settings.columns) ? settings.columns : [];
+  if (columns.length === 0) {
+    throw new Error('Plan settings must declare at least one scan column.');
+  }
+  const grain = Array.isArray(settings.grain) ? settings.grain : [];
+  if (grain.length === 0) {
+    throw new Error('Plan settings must declare a grain.');
+  }
+  const pins = isRecord(settings.pins) ? settings.pins : null;
+  if (!pins || typeof pins.semantic_hash !== 'string' || pins.semantic_hash.trim() === '') {
+    throw new Error('Plan settings must include a non-empty pins.semantic_hash.');
+  }
   const typeMap: Record<string, string> = {};
   for (const row of types) {
     const name = row.name.trim();

@@ -167,11 +167,25 @@ export async function executeScenarioPlan(
   const instance = await DuckDBInstance.create(':memory:');
   const connection = await instance.connect();
   try {
-    if (!scan.artifact) {
+    const sourceNames = new Set<string>();
+    if (!scan.artifact) sourceNames.add(scan.source);
+    for (const stage of plan.stages) {
+      if (stage.op === 'join') sourceNames.add(stage.source);
+    }
+    if (sourceNames.size > 0) {
       await connection.run(
         `ATTACH ${sqlString(input.analyticsDbPath)} AS analytics (READ_ONLY)`
       );
-      await connection.run(createSourceViewSql(scan.source));
+      for (const source of sourceNames) {
+        await connection.run(createSourceViewSql(source));
+      }
+    }
+
+    for (const validation of compiled.validations) {
+      const reader = await connection.runAndReadAll(validation.sql);
+      if (reader.getRowObjects().length > 0) {
+        throw new Error(`Validation ${validation.check} failed`);
+      }
     }
 
     const resultDir = path.join(input.resultsDir, input.scenarioVersionId);

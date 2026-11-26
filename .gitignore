@@ -8,6 +8,7 @@ data/*.duckdb
 data/*.duckdb.wal
 data/staging/
 data/.duckdb-extensions/
+data/results/
 # Dynamic Cube schema snapshots (regenerated from the model registry)
 data/cube-schema/
 

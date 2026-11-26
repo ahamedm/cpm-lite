@@ -52,6 +52,15 @@ It does **not** run scenario calculations, allocate costs, query Cube, or serve 
 
 Versioned resources carry a `row_version` that becomes the HTTP `ETag`. User-facing writes never mutate a published/completed version; they create a new version.
 
+`ModelDefinition` is `1.0` for a single-dataset model and `1.1` for a model
+with reference datasets. A `1.1` document adds `datasets`, `grain` and
+`joins[].on[]`; the principal dataset remains `source` + `dimensions` +
+`measures`. MVP reference joins are one-hop `many_to_one` / `one_to_one` and
+carry no target-version pin (A2). Model preview joins the declared reference
+datasets, and a canonical calculation plan may include a `join` stage that
+projects reference columns. The worker validates joined-key uniqueness before
+writing a result.
+
 A scenario version may also carry a canonical `calculation_plan` (ADR 0009). The
 API validates it against the version’s pinned model version, stores the
 normalized plan with its content hash and compiler version, and pins all three

@@ -43,16 +43,23 @@ Design tokens and primitives live in `src/styles.css` and `src/components/ui.tsx
 1. loads governed sources and column profiles from `/api/v1/model-sources`;
 2. asks for grain confirmation with a real duplicate-key check;
 3. lets the user pick columns, rename fields, choose aggregation and format;
-4. maps department scope and, for stewards, previews as another department;
-5. shows a live, read-only aggregate preview from `/api/v1/model-preview`;
-6. creates a draft model and validates it; publishing remains on the model page.
+4. optionally adds one governed reference dataset, joins it many-to-one to the
+   principal source, and exposes selected reference fields as dimensions;
+5. maps department scope and, for stewards, previews as another department;
+6. shows a live, read-only aggregate preview from `/api/v1/model-preview`;
+7. creates a draft model and validates it; publishing remains on the model page.
 
 The preview reads `data/cpm_lite_preview.duckdb`, built by `make data` as a
 read-only copy of the analytical snapshot. This avoids DuckDB's single-writer
 lock contention with Cube. The preview API only accepts allowlisted source
 columns and aggregations; arbitrary expressions are rejected.
 
-Follow-up slices: join authoring, templates and a code view.
+Reference authoring is one hop and `many_to_one` only. The reference key must be
+unique; the API rejects duplicate keys before a job writes a result. The model
+detail page shows the reference datasets and joins for the version.
+
+Follow-up slices: A2 pinned cross-version reference models, templates and a code
+view.
 
 ## Scenario algorithm
 
@@ -66,10 +73,16 @@ Drafts are edited through **Edit algorithm**. PRQL is the primary mode:
   derive stages;
 - every derived column needs an explicit type;
 - source, columns, grain, pins, drivers and the allocate/validate/write stages
-  live in the collapsible **Plan settings** JSON;
+  live in the collapsible **Plan settings** JSON, seeded from the pinned model
+  version so a new algorithm compiles without hand-written placeholders
+  (Plan settings opens by default for a version with no algorithm);
 - **Compile preview** calls
   `POST /scenario-versions/{id}/algorithm/compile` and shows the resulting
   stages without saving.
+
+The two tabs are alternatives: only the active tab is saved. Switching from a
+parsed **Plan JSON** back to **PRQL** derives the PRQL and plan settings from
+that plan, so a pasted plan cannot leave stale empty settings behind.
 
 **Plan JSON** keeps the canonical `cpm-calculation-plan/0` editor for advanced
 changes. The API compiles and validates the result against the version's pinned

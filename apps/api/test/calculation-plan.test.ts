@@ -279,3 +279,71 @@ test('the first stage must be scan', () => {
       error instanceof CalculationPlanError && error.message.includes('first stage must be scan')
   );
 });
+
+test('join stage projects reference columns and checks key uniqueness', async () => {
+  await withConnection(async (connection) => {
+    await createFixture(connection);
+    await connection.run(`
+      CREATE TABLE dim_department (
+        department_code VARCHAR NOT NULL,
+        department_name VARCHAR NOT NULL
+      );
+      INSERT INTO dim_department VALUES
+        ('ops', 'Operations'),
+        ('fin', 'Finance');
+    `);
+    const plan = validateCalculationPlan({
+      format: 'cpm-calculation-plan/0',
+      grain: ['department_code', 'cost_centre_code'],
+      pins: {
+        model_version_id: 'mv-test',
+        semantic_hash: 'sha256:test',
+        rule_version_ids: [],
+      },
+      drivers: {},
+      stages: [
+        {
+          op: 'scan',
+          source: 'base_facts',
+          columns: ['department_code', 'cost_centre_code', 'amount'],
+        },
+        {
+          op: 'join',
+          source: 'dim_department',
+          alias: 'd',
+          type: 'left',
+          on: [{ left: 'department_code', right: 'department_code' }],
+          columns: [{ name: 'department_name', as: 'department_name' }],
+        },
+        {
+          op: 'write',
+          format: 'parquet',
+          measures: ['department_name', 'amount'],
+        },
+      ],
+    });
+    const compiled = compileDuckDbPlan(plan);
+    assert.match(compiled.sql, /LEFT JOIN/);
+    assert.match(compiled.sql, /"department_name"/);
+
+    const rows = await query(
+      connection,
+      `SELECT DISTINCT department_code, department_name
+       FROM (${compiled.sql}) result
+       ORDER BY department_code`
+    );
+    assert.deepEqual(rows, [
+      { department_code: 'fin', department_name: 'Finance' },
+      { department_code: 'ops', department_name: 'Operations' },
+    ]);
+
+    const uniqueness = compiled.validations.find(
+      (validation) => validation.check === 'join_key_uniqueness'
+    );
+    assert.ok(uniqueness);
+    assert.deepEqual(await query(connection, uniqueness.sql), []);
+
+    await connection.run(`INSERT INTO dim_department VALUES ('ops', 'Operations duplicate')`);
+    assert.equal((await query(connection, uniqueness.sql)).length, 1);
+  });
+});

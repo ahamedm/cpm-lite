@@ -112,7 +112,8 @@ export async function listPublishedVersions(db: Kysely<Database>): Promise<Publi
 function cubeInputFor(
   row: PublishedVersionRow,
   source: { source_id: string; columns: Array<{ name: string }> },
-  semantic: SemanticModel
+  semantic: SemanticModel,
+  sources: Array<{ source_id: string; columns: string[] }> = []
 ) {
   return {
     model: {
@@ -133,6 +134,7 @@ function cubeInputFor(
       source_id: source.source_id,
       columns: source.columns.map((column) => column.name),
     },
+    ...(sources.length > 0 ? { sources } : {}),
     semantic,
   };
 }
@@ -246,9 +248,18 @@ export async function processCubeRefreshOnce(
     rows = promotion.rows;
     promoted = promotion.promoted;
     const cubes = await Promise.all(
-      rows.map(async (row) =>
-        buildCube(cubeInputFor(row, source, await semanticForRow(db, row, source)))
-      )
+      rows.map(async (row) => {
+        const semantic = await semanticForRow(db, row, source);
+        const sourceIds = [...new Set(semantic.datasets.map((dataset) => dataset.source))];
+        const resolved = await Promise.all(
+          sourceIds.map((sourceId) => deps.analytics.getSource(sourceId))
+        );
+        const sources = resolved.map((entry) => ({
+          source_id: entry.source_id,
+          columns: entry.columns.map((column) => column.name),
+        }));
+        return buildCube(cubeInputFor(row, source, semantic, sources));
+      })
     );
     committed = await store.commit(cubes, now);
 

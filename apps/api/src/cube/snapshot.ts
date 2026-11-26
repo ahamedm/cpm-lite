@@ -34,6 +34,8 @@ export interface CubeSchemaManifestEntry {
   model_version_id: string;
   version_number: number;
   cube_name: string;
+  /** Internal reference cubes rendered alongside the principal cube. */
+  cube_names?: string[];
   file_name: string;
   measures: string[];
 }
@@ -78,6 +80,7 @@ export function manifestFor(cubes: GeneratedCube[], schemaVersion: string, gener
         model_version_id: cube.model_version_id,
         version_number: cube.version_number,
         cube_name: cube.cube_name,
+        cube_names: cube.cube_names,
         file_name: cube.file_name,
         measures: cube.measures,
       }))
@@ -153,6 +156,7 @@ export function readCubeSchemaSnapshot(
       model_version_id: entry.model_version_id,
       version_number: entry.version_number,
       cube_name: entry.cube_name,
+      cube_names: Array.isArray(entry.cube_names) ? entry.cube_names : [entry.cube_name],
       file_name: entry.file_name,
       content: readFileSync(filePath, 'utf8'),
       measures: Array.isArray(entry.measures) ? entry.measures : [],

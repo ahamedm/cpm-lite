@@ -3,6 +3,7 @@ import { DuckDBInstance, type DuckDBConnection } from '@duckdb/node-api';
 import type { AuthUser } from './auth.js';
 import type { ModelDefinition, ModelPreviewRequest } from './contracts.js';
 import { forbidden, serviceUnavailable, unprocessable } from './errors.js';
+import { datasetNameFromSource } from './semantic/from-definition.js';
 
 export interface ModelSourceColumn {
   name: string;
@@ -115,6 +116,47 @@ const SOURCE_DEFINITION: SourceDefinition = {
   ],
 };
 
+const REFERENCE_SOURCE_DEFINITIONS: SourceDefinition[] = [
+  {
+    source_id: 'gold.dim_department',
+    table: 'gold.dim_department',
+    name: 'Departments',
+    description: 'Governed department reference data.',
+    grain: 'One row per department',
+    grain_key: 'department_code',
+    relationships: [],
+  },
+  {
+    source_id: 'gold.dim_category',
+    table: 'gold.dim_category',
+    name: 'Spend categories',
+    description: 'Governed spend category reference data.',
+    grain: 'One row per category',
+    grain_key: 'category_code',
+    relationships: [],
+  },
+  {
+    source_id: 'gold.dim_region',
+    table: 'gold.dim_region',
+    name: 'Regions',
+    description: 'Governed region reference data.',
+    grain: 'One row per region',
+    grain_key: 'region_code',
+    relationships: [],
+  },
+  {
+    source_id: 'gold.dim_date',
+    table: 'gold.dim_date',
+    name: 'Fiscal dates',
+    description: 'Governed date and period reference data.',
+    grain: 'One row per date',
+    grain_key: 'date_key',
+    relationships: [],
+  },
+];
+
+const SOURCE_DEFINITIONS: SourceDefinition[] = [SOURCE_DEFINITION, ...REFERENCE_SOURCE_DEFINITIONS];
+
 const COLUMN_META: Record<string, ColumnMeta> = {
   financial_id: { label: 'Financial record', role: 'dimension' },
   transaction_id: { label: 'Transaction ID', role: 'dimension' },
@@ -138,6 +180,10 @@ function quoteIdentifier(value: string): string {
     throw unprocessable(`Unsupported column identifier: ${value}`);
   }
   return `"${value.replaceAll('"', '""')}"`;
+}
+
+function quoteQualified(source: string): string {
+  return source.split('.').map(quoteIdentifier).join('.');
 }
 
 function displayValue(value: unknown): string | null {
@@ -197,7 +243,7 @@ function suggestColumn(name: string, columnType: string): ColumnMeta {
 export class AnalyticsHandle {
   private instance: DuckDBInstance | null = null;
   private connection: DuckDBConnection | null = null;
-  private catalog: { at: number; value: ModelSource } | null = null;
+  private catalog: { at: number; value: ModelSource[] } | null = null;
 
   constructor(private readonly databasePath: string) {}
 
@@ -220,17 +266,45 @@ export class AnalyticsHandle {
   }
 
   async listSources(): Promise<ModelSource[]> {
-    const source = await this.getSource();
-    return [source];
-  }
-
-  async getSource(): Promise<ModelSource> {
     if (this.catalog && Date.now() - this.catalog.at < CACHE_MS) return this.catalog.value;
     const connection = await this.getConnection();
-    const described = await connection.runAndReadAll(`DESCRIBE SELECT * FROM ${SOURCE_DEFINITION.table}`);
+    const sources: ModelSource[] = [];
+    for (const definition of SOURCE_DEFINITIONS) {
+      const [schema, table] = definition.table.split('.');
+      if (!schema || !table) continue;
+      const exists = await connection.runAndReadAll(
+        `SELECT 1 AS present FROM information_schema.tables
+         WHERE table_schema = ? AND table_name = ? LIMIT 1`,
+        [schema, table]
+      );
+      if (exists.getRowObjects().length === 0) continue;
+      sources.push(await this.buildSource(connection, definition));
+    }
+    this.catalog = { at: Date.now(), value: sources };
+    return sources;
+  }
+
+  async getSource(sourceId?: string): Promise<ModelSource> {
+    const sources = await this.listSources();
+    const id = sourceId ?? SOURCE_DEFINITION.source_id;
+    const source = sources.find((candidate) => candidate.source_id === id);
+    if (!source) throw unprocessable(`Source ${id} is not available for preview`);
+    return source;
+  }
+
+  async getSources(sourceIds: string[]): Promise<ModelSource[]> {
+    const unique = [...new Set(sourceIds)];
+    return Promise.all(unique.map((sourceId) => this.getSource(sourceId)));
+  }
+
+  private async buildSource(
+    connection: DuckDBConnection,
+    definition: SourceDefinition
+  ): Promise<ModelSource> {
+    const described = await connection.runAndReadAll(`DESCRIBE SELECT * FROM ${definition.table}`);
     const rows = described.getRowObjects();
     const rowCount = toNumber(
-      (await connection.runAndReadAll(`SELECT count(*) AS n FROM ${SOURCE_DEFINITION.table}`)).getRowObjects()[0]?.n
+      (await connection.runAndReadAll(`SELECT count(*) AS n FROM ${definition.table}`)).getRowObjects()[0]?.n
     );
 
     const columns: ModelSourceColumn[] = [];
@@ -240,10 +314,10 @@ export class AnalyticsHandle {
       const stats = await connection.runAndReadAll(
         `SELECT count(*) AS total, count(DISTINCT ${quoteIdentifier(name)}) AS distinct_count,
                 count(*) - count(${quoteIdentifier(name)}) AS null_count
-         FROM ${SOURCE_DEFINITION.table}`
+         FROM ${definition.table}`
       );
       const sample = await connection.runAndReadAll(
-        `SELECT ${quoteIdentifier(name)} AS value FROM ${SOURCE_DEFINITION.table}
+        `SELECT ${quoteIdentifier(name)} AS value FROM ${definition.table}
          WHERE ${quoteIdentifier(name)} IS NOT NULL LIMIT 5`
       );
       const statRow = stats.getRowObjects()[0] ?? {};
@@ -265,30 +339,153 @@ export class AnalyticsHandle {
       });
     }
 
-    const grainColumn = columns.find((column) => column.name === SOURCE_DEFINITION.grain_key);
-    const source: ModelSource = {
-      ...SOURCE_DEFINITION,
+    const grainColumn = columns.find((column) => column.name === definition.grain_key);
+    return {
+      ...definition,
       grain_unique: Boolean(grainColumn && grainColumn.distinct_count === rowCount),
       row_count: rowCount,
       refreshed_at: new Date().toISOString(),
       columns,
-      relationships: SOURCE_DEFINITION.relationships,
+      relationships: definition.relationships,
     };
-    this.catalog = { at: Date.now(), value: source };
-    return source;
   }
 
   async preview(user: AuthUser, body: ModelPreviewRequest): Promise<ModelPreview> {
-    const source = await this.getSource();
+    const factSource = await this.getSource();
     const definition = body.definition;
-    const sourceId = definition.source?.source_id ?? source.source_id;
-    if (sourceId !== source.source_id) {
+    const sourceId = definition.source?.source_id ?? factSource.source_id;
+    if (sourceId !== factSource.source_id) {
       throw unprocessable(`Source ${sourceId} is not available for preview`);
     }
+    const factDataset = datasetNameFromSource(sourceId);
 
-    const available = new Map(source.columns.map((column) => [column.name, column]));
-    const dimensions = body.group_by.map((code) => definition.dimensions.find((field) => field.code === code));
-    const measures = body.measures.map((code) => definition.measures.find((field) => field.code === code));
+    const referenceDatasets = new Map<
+      string,
+      { source: string; fields: Array<Record<string, unknown>> }
+    >();
+    const rawDatasets = Array.isArray(definition.datasets) ? definition.datasets : [];
+    for (const raw of rawDatasets) {
+      if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+        throw unprocessable('A reference dataset must be an object');
+      }
+      const value = raw as Record<string, unknown>;
+      const name = String(value.name ?? '');
+      const source = String(value.source ?? '');
+      if (!name || !source) throw unprocessable('Every reference dataset needs a name and source');
+      if (name === factDataset) {
+        throw unprocessable(`Reference dataset ${name} collides with the principal dataset`);
+      }
+      if (referenceDatasets.has(name)) throw unprocessable(`Duplicate dataset ${name}`);
+      referenceDatasets.set(name, {
+        source,
+        fields: Array.isArray(value.fields) ? (value.fields as Array<Record<string, unknown>>) : [],
+      });
+    }
+
+    const datasetSources = new Map<string, ModelSource>([[factDataset, factSource]]);
+    const datasetAliases = new Map<string, string>([[factDataset, 'f']]);
+    let aliasIndex = 0;
+    for (const [name, reference] of referenceDatasets) {
+      datasetSources.set(name, await this.getSource(reference.source));
+      datasetAliases.set(name, `j${aliasIndex++}`);
+    }
+
+    const factMembers = new Map<string, string>();
+    for (const field of definition.dimensions) {
+      if (String(field.dataset ?? factDataset) === factDataset) {
+        factMembers.set(String(field.code), String(field.expression));
+      }
+    }
+    const referenceMembers = new Map<string, Map<string, string>>();
+    for (const [name, reference] of referenceDatasets) {
+      referenceMembers.set(
+        name,
+        new Map(
+          reference.fields.map((field) => [
+            String(field.code ?? ''),
+            String(field.expression ?? ''),
+          ])
+        )
+      );
+    }
+
+    const joinedDatasets = new Set<string>();
+    const joinClauses: string[] = [];
+    const rawJoins = Array.isArray(definition.joins) ? definition.joins : [];
+    for (const raw of rawJoins) {
+      if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+        throw unprocessable('A join must be an object');
+      }
+      const join = raw as Record<string, unknown>;
+      const relationship = String(join.relationship ?? 'many_to_one');
+      if (relationship !== 'many_to_one' && relationship !== 'one_to_one') {
+        throw unprocessable(`Join ${String(join.name ?? '')} must be many_to_one or one_to_one`);
+      }
+      const sourceDataset = String(join.source_dataset ?? factDataset);
+      if (sourceDataset !== factDataset) {
+        throw unprocessable('Preview supports joins from the principal dataset only');
+      }
+      const targetDataset = String(
+        join.target_dataset ??
+          (join.target_model_code ? datasetNameFromSource(String(join.target_model_code)) : '')
+      );
+      const reference = referenceDatasets.get(targetDataset);
+      if (!reference) {
+        throw unprocessable(
+          `Join target ${targetDataset || '(missing)'} is not a declared reference dataset`
+        );
+      }
+      if (joinedDatasets.has(targetDataset)) {
+        throw unprocessable(`Dataset ${targetDataset} is joined more than once`);
+      }
+      const targetSource = datasetSources.get(targetDataset)!;
+      if (!targetSource.grain_unique) {
+        throw unprocessable(`Reference dataset ${targetDataset} is not unique at its grain`);
+      }
+      const targetAlias = datasetAliases.get(targetDataset)!;
+      const on = Array.isArray(join.on) ? (join.on as Array<Record<string, unknown>>) : [];
+      const pairs = on.length
+        ? on.map((pair) => ({
+            source: String(pair.source_member ?? ''),
+            target: String(pair.target_member ?? ''),
+          }))
+        : [
+            {
+              source: String(join.source_member_code ?? ''),
+              target: String(join.target_member_code ?? ''),
+            },
+          ];
+      if (pairs.some((pair) => !pair.source || !pair.target)) {
+        throw unprocessable(`Join ${String(join.name ?? targetDataset)} is missing key members`);
+      }
+      const targetMembers = referenceMembers.get(targetDataset) ?? new Map<string, string>();
+      const resolvedPairs = pairs.map((pair) => ({
+        source: factMembers.get(pair.source) ?? pair.source,
+        target: targetMembers.get(pair.target) ?? pair.target,
+      }));
+      for (const pair of resolvedPairs) {
+        if (!factSource.columns.some((column) => column.name === pair.source)) {
+          throw unprocessable(`Join source member ${pair.source} is not in the principal source`);
+        }
+        if (!targetSource.columns.some((column) => column.name === pair.target)) {
+          throw unprocessable(`Join target member ${pair.target} is not in ${targetDataset}`);
+        }
+      }
+      const conditions = resolvedPairs.map(
+        (pair) => `f.${quoteIdentifier(pair.source)} = ${targetAlias}.${quoteIdentifier(pair.target)}`
+      );
+      joinClauses.push(
+        `LEFT JOIN ${quoteQualified(reference.source)} AS ${targetAlias} ON ${conditions.join(' AND ')}`
+      );
+      joinedDatasets.add(targetDataset);
+    }
+
+    const dimensions = body.group_by.map((code) =>
+      definition.dimensions.find((field) => field.code === code)
+    );
+    const measures = body.measures.map((code) =>
+      definition.measures.find((field) => field.code === code)
+    );
 
     if (dimensions.some((field) => !field)) throw unprocessable('A selected dimension is not in the model definition');
     if (measures.some((field) => !field)) throw unprocessable('A selected measure is not in the model definition');
@@ -301,20 +498,40 @@ export class AnalyticsHandle {
       throw unprocessable('Dimension and measure codes must be unique');
     }
 
-    const accessField = definition.access?.row_level_field ?? 'department_code';
+    const accessField = String(definition.access?.row_level_field ?? 'department_code');
     if (accessField !== 'department_code') {
       throw unprocessable('The current preview supports department_code access only');
     }
-    if (!available.has(accessField)) {
+    const accessDimension = definition.dimensions.find(
+      (field) => String(field.code) === accessField || String(field.expression) === accessField
+    );
+    if (!accessDimension || String(accessDimension.dataset ?? factDataset) !== factDataset) {
+      throw unprocessable(`Access field ${accessField} is not in the principal dataset`);
+    }
+    const accessColumn = String(accessDimension.expression ?? '');
+    if (!factSource.columns.some((column) => column.name === accessColumn)) {
       throw unprocessable(`Access field ${accessField} is not in the governed source`);
     }
 
+    const measureCodes = new Set(
+      measures.map((field) => String((field as Record<string, unknown>).code))
+    );
     for (const field of selected) {
-      const expression = String(field.expression ?? '');
-      const code = String(field.code ?? '');
+      const value = field as Record<string, unknown>;
+      const code = String(value.code ?? '');
+      const owner = String(value.dataset ?? factDataset);
+      const ownerSource = datasetSources.get(owner);
+      if (!ownerSource) throw unprocessable(`Field ${code} references unknown dataset ${owner}`);
+      const expression = String(value.expression ?? '');
       if (!SAFE_IDENTIFIER.test(code)) throw unprocessable(`Unsupported field code: ${code}`);
-      if (!available.has(expression)) {
-        throw unprocessable(`Expression for ${code} must reference a governed source column`);
+      if (!ownerSource.columns.some((column) => column.name === expression)) {
+        throw unprocessable(`Expression for ${code} must reference a governed column of ${owner}`);
+      }
+      if (measureCodes.has(code) && owner !== factDataset) {
+        throw unprocessable(`Measure ${code} must belong to the principal dataset`);
+      }
+      if (owner !== factDataset && !joinedDatasets.has(owner)) {
+        throw unprocessable(`Dataset ${owner} is not joined by the model`);
       }
     }
 
@@ -332,29 +549,42 @@ export class AnalyticsHandle {
     }
 
     const select = [
-      ...dimensions.map((field) => `${quoteIdentifier(String((field as Record<string, unknown>).expression))} AS ${quoteIdentifier(String((field as Record<string, unknown>).code))}`),
-      ...measures.map((field) => `${aggregateSql(field as Record<string, unknown>)} AS ${quoteIdentifier(String((field as Record<string, unknown>).code))}`),
+      ...dimensions.map((field) => {
+        const value = field as Record<string, unknown>;
+        const owner = String(value.dataset ?? factDataset);
+        return `${datasetAliases.get(owner)!}.${quoteIdentifier(String(value.expression))} AS ${quoteIdentifier(String(value.code))}`;
+      }),
+      ...measures.map((field) => {
+        const value = field as Record<string, unknown>;
+        return `${aggregateSql(value, 'f')} AS ${quoteIdentifier(String(value.code))}`;
+      }),
     ];
+    const measureSelect = measures.map((field) => {
+      const value = field as Record<string, unknown>;
+      return `${aggregateSql(value, 'f')} AS ${quoteIdentifier(String(value.code))}`;
+    });
+    const from = `${quoteQualified(factSource.source_id)} AS f${
+      joinClauses.length > 0 ? ` ${joinClauses.join(' ')}` : ''
+    }`;
     const groupBy = dimensions.length
       ? ` GROUP BY ${dimensions.map((_, index) => index + 1).join(', ')}`
       : '';
-    const where = departmentCode ? ` WHERE ${quoteIdentifier(accessField)} = ?` : '';
+    const where = departmentCode ? ` WHERE f.${quoteIdentifier(accessColumn)} = ?` : '';
     const filterValues = departmentCode ? [departmentCode] : [];
     const limit = Math.min(Math.max(body.limit ?? 25, 1), 100);
     const connection = await this.getConnection();
 
     const previewReader = await connection.runAndReadAll(
-      `SELECT ${select.join(', ')} FROM ${SOURCE_DEFINITION.table}${where}${groupBy}
+      `SELECT ${select.join(', ')} FROM ${from}${where}${groupBy}
        ORDER BY ${dimensions.map((_, index) => index + 1).join(', ') || '1'} LIMIT ?`,
       [...filterValues, limit]
     );
     const totalsReader = await connection.runAndReadAll(
-      `SELECT ${measures.map((field) => `${aggregateSql(field as Record<string, unknown>)} AS ${quoteIdentifier(String((field as Record<string, unknown>).code))}`).join(', ')}
-       FROM ${SOURCE_DEFINITION.table}${where}`,
+      `SELECT ${measureSelect.join(', ')} FROM ${from}${where}`,
       filterValues
     );
     const countReader = await connection.runAndReadAll(
-      `SELECT count(*) AS n FROM ${SOURCE_DEFINITION.table}${where}`,
+      `SELECT count(*) AS n FROM ${from}${where}`,
       filterValues
     );
 
@@ -368,7 +598,7 @@ export class AnalyticsHandle {
     for (const [key, cell] of Object.entries(totalsRow)) totals[key] = jsonValue(cell);
 
     return {
-      source_id: source.source_id,
+      source_id: factSource.source_id,
       columns: [
         ...dimensions.map((field) => {
           const value = field as Record<string, unknown>;
@@ -411,14 +641,17 @@ export class AnalyticsHandle {
   }
 }
 
-function aggregateSql(field: Record<string, unknown>): string {
+function aggregateSql(field: Record<string, unknown>, alias = ''): string {
   const aggregation = String(field.aggregation ?? 'sum');
   const expression = String(field.expression ?? '');
   if (!AGGREGATIONS.has(aggregation)) {
     throw unprocessable(`Unsupported aggregation: ${aggregation}`);
   }
   if (aggregation === 'count') return 'count(*)';
-  return `${aggregation === 'count_distinct' ? 'count(DISTINCT ' : `${aggregation}(`}${quoteIdentifier(expression)})`;
+  const operand = alias
+    ? `${alias}.${quoteIdentifier(expression)}`
+    : quoteIdentifier(expression);
+  return `${aggregation === 'count_distinct' ? 'count(DISTINCT ' : `${aggregation}(`}${operand})`;
 }
 
 export function createAnalytics(databasePath: string): AnalyticsHandle {

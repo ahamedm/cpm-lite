@@ -47,7 +47,7 @@ door.
 
 Use a persistent recipe rather than a locked wizard:
 
-**Source → Grain → Fields → Access → Review**
+**Source → Grain → Fields → References → Access → Review**
 
 1. **Source**
    - Searchable governed source list.
@@ -66,13 +66,21 @@ Use a persistent recipe rather than a locked wizard:
    - Rename to business labels; choose aggregation and format.
    - Raw expressions stay behind an advanced affordance.
 
-4. **Access**
+4. **References**
+   - Optional: choose one governed reference dataset from the catalog.
+   - Declare a `many_to_one` join from a principal dimension to the unique
+     reference key.
+   - Expose selected reference fields as dimensions; preview the join grouping.
+   - The reference key must be unique. A duplicate key fails the preview or job
+     before a result is written.
+
+5. **Access**
    - Map a model field to the department scope.
    - Show the row count a Finance user would see.
    - Stewards can preview as another role; business users are fixed to their
      token scope.
 
-5. **Review**
+6. **Review**
    - Plain-language summary and validation checks.
    - Live preview table and totals.
    - Create a draft/validate; publishing remains an explicit, versioned action.
@@ -87,6 +95,7 @@ Use a persistent recipe rather than a locked wizard:
 │ ✓ Source      │ department | budget | actual | variance             │
 │ ✓ Grain       │ Finance    | 46.1M  | 48.0M  | 1.9M                │
 │ ● Fields      │ HR         | 12.4M  | 13.1M  | 0.7M                │
+│ ○ References  │ ...                                             │
 │ ○ Access      │ ...                                             │
 │ ○ Review      │ [Group by: Department] [Measure: Variance]      │
 ├───────────────┴─────────────────────────────────┴──────────────────┤
@@ -131,10 +140,12 @@ API; it is not a hardcoded sample.
 ## Implemented in this slice
 
 - Governed source catalog with real profiling.
-- Source → grain → fields → access → review.
-- Live, authorized preview with totals.
+- Source → grain → fields → references → access → review.
+- One-hop, many-to-one reference dataset authoring with exposed reference fields.
+- Live, authorized preview with totals, including joined reference dimensions.
 - Create draft and validate; publish from the existing model detail.
-- No join authoring, templates, AI suggestions or code editor yet.
+- Model detail shows the reference datasets and joins for the version.
+- No A2 cross-version reference pins, templates, AI suggestions or code editor yet.
 
 ## Preview data path
 

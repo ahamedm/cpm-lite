@@ -47,6 +47,13 @@ test('Thin Orchestrator API end-to-end', async () => {
       ('f1', 't1', DATE '2026-01-15', 'finance', 'software', 'north', 'card', 100.00, 120.00, 20.00, 'USD'),
       ('f2', 't2', DATE '2026-02-15', 'finance', 'software', 'north', 'card', 200.00, 180.00, -20.00, 'USD'),
       ('h1', 't3', DATE '2026-01-20', 'hr', 'payroll', 'west', 'transfer', 300.00, 310.00, 10.00, 'USD');
+    CREATE TABLE gold.dim_department (
+      department_code VARCHAR NOT NULL,
+      department_name VARCHAR NOT NULL
+    );
+    INSERT INTO gold.dim_department VALUES
+      ('finance', 'Finance'),
+      ('hr', 'Human Resources');
   `);
   analyticsConnection.closeSync();
   analyticsInstance.closeSync();
@@ -205,6 +212,86 @@ test('Thin Orchestrator API end-to-end', async () => {
       },
     });
     assert.equal(unsafePreview.statusCode, 422);
+
+    const joinedDefinition = {
+      schema_version: '1.1',
+      source: { source_id: 'gold.fact_financials' },
+      access: { row_level_field: 'department_code' },
+      grain: ['department'],
+      datasets: [
+        {
+          name: 'dim_department',
+          source: 'gold.dim_department',
+          primary_key: ['department_code'],
+          fields: [
+            { code: 'department_code', name: 'Department code', data_type: 'string', expression: 'department_code' },
+            { code: 'department_name', name: 'Department name', data_type: 'string', expression: 'department_name' },
+          ],
+        },
+      ],
+      dimensions: [
+        { code: 'department', name: 'Department', data_type: 'string', expression: 'department_code' },
+        { code: 'department_name', name: 'Department name', data_type: 'string', expression: 'department_name', dataset: 'dim_department' },
+      ],
+      measures: [
+        { code: 'budget', name: 'Budget', aggregation: 'sum', expression: 'budget_amount', format: 'currency', currency_code: 'USD' },
+      ],
+      joins: [
+        {
+          name: 'department',
+          relationship: 'many_to_one',
+          source_dataset: 'fact_financials',
+          target_dataset: 'dim_department',
+          on: [{ source_member: 'department', target_member: 'department_code' }],
+        },
+      ],
+    };
+
+    const joinedPreview = await app.inject({
+      method: 'POST',
+      url: '/api/v1/model-preview',
+      headers: auth(steward),
+      payload: { definition: joinedDefinition, group_by: ['department_name'], measures: ['budget'], limit: 10 },
+    });
+    assert.equal(joinedPreview.statusCode, 200, joinedPreview.body);
+    assert.equal(String(joinedPreview.json().totals.budget), '600.00');
+    assert.equal(joinedPreview.json().rows.length, 2);
+    assert.equal(
+      joinedPreview.json().rows.find((row: { department_name: string }) => row.department_name === 'Finance')?.budget,
+      '300.00'
+    );
+
+    const joinedFinancePreview = await app.inject({
+      method: 'POST',
+      url: '/api/v1/model-preview',
+      headers: auth(finance),
+      payload: { definition: joinedDefinition, group_by: ['department_name'], measures: ['budget'], limit: 10 },
+    });
+    assert.equal(joinedFinancePreview.statusCode, 200, joinedFinancePreview.body);
+    assert.equal(String(joinedFinancePreview.json().totals.budget), '300.00');
+    assert.deepEqual(joinedFinancePreview.json().rows, [
+      { department_name: 'Finance', budget: '300.00' },
+    ]);
+
+    const joinedModel = await app.inject({
+      method: 'POST',
+      url: '/api/v1/models',
+      headers: auth(finance),
+      payload: {
+        name: 'Joined Budget Model',
+        visibility: 'department',
+        definition: joinedDefinition,
+      },
+    });
+    assert.equal(joinedModel.statusCode, 201, joinedModel.body);
+    const joinedVersionId = joinedModel.json().latest_version.model_version_id;
+    const joinedValidation = await app.inject({
+      method: 'POST',
+      url: `/api/v1/model-versions/${joinedVersionId}/validate`,
+      headers: auth(finance),
+    });
+    assert.equal(joinedValidation.statusCode, 200, joinedValidation.body);
+    assert.equal(joinedValidation.json().valid, true, joinedValidation.body);
 
     const unauthenticated = await app.inject({ method: 'GET', url: '/api/v1/models' });
     assert.equal(unauthenticated.statusCode, 401);

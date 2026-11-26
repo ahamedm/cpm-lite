@@ -151,6 +151,63 @@ export function ModelDetailPage() {
               </div>
             </Panel>
 
+            {versionQuery.data.data.definition.datasets?.length ? (
+              <Panel
+                title="Reference datasets"
+                description="Governed lookups joined into this model version."
+              >
+                <div className="table-wrap">
+                  <table className="data-table data-table--compact">
+                    <thead>
+                      <tr><th>Dataset</th><th>Source</th><th>Primary key</th></tr>
+                    </thead>
+                    <tbody>
+                      {(versionQuery.data.data.definition.datasets ?? []).map((dataset) => (
+                        <tr key={dataset.name}>
+                          <td className="mono">{dataset.name}</td>
+                          <td className="mono muted">{dataset.source}</td>
+                          <td className="mono muted">{(dataset.primary_key ?? []).join(', ') || '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {versionQuery.data.data.definition.joins?.length ? (
+                  <>
+                    <div className="studio-table-heading">
+                      <h3>Joins</h3>
+                      <p>Many-to-one relationships applied by Cube, preview and scenario plans.</p>
+                    </div>
+                    <div className="table-wrap">
+                      <table className="data-table data-table--compact">
+                        <thead>
+                          <tr><th>Name</th><th>From</th><th>To</th><th>Cardinality</th></tr>
+                        </thead>
+                        <tbody>
+                          {(versionQuery.data.data.definition.joins ?? []).map((join) => (
+                            <tr key={join.name}>
+                              <td className="mono">{join.name}</td>
+                              <td className="mono muted">
+                                {(join.on ?? []).map((pair) => pair.source_member).join(', ') ||
+                                  join.source_dataset ||
+                                  '—'}
+                              </td>
+                              <td className="mono muted">
+                                {(join.on ?? []).map((pair) => pair.target_member).join(', ') ||
+                                  join.target_dataset ||
+                                  '—'}
+                              </td>
+                              <td className="muted">{join.relationship.replace(/_/g, ' ')}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                ) : null}
+              </Panel>
+            ) : null}
+
             <Panel
               title="Validation"
               description="Structural and semantic checks run against this draft."

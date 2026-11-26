@@ -23,7 +23,12 @@ function target(cube: GeneratedCube): CubeVerificationTarget {
 }
 
 export function verificationTargets(cubes: GeneratedCube[]): CubeVerificationTarget[] {
-  return cubes.map(target);
+  return cubes.flatMap((cube) =>
+    cube.cube_names.map((cubeName, index) => ({
+      cube_name: cubeName,
+      measures: index === 0 ? cube.measures : [],
+    }))
+  );
 }
 
 export async function verifyCubeSchema(

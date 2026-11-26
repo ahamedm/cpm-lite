@@ -13,13 +13,13 @@ import { semanticModelHash } from './canonical.js';
 import { semanticModelFromDefinition } from './from-definition.js';
 import {
   SEMANTIC_MODEL_FORMAT,
-  SEMANTIC_SCHEMA_VERSION,
   type SemanticAggregation,
   type SemanticCardinality,
   type SemanticDataType,
   type SemanticExpression,
   type SemanticFormat,
   type SemanticModel,
+  type SemanticSchemaVersion,
 } from './types.js';
 
 export type DatabaseExecutor = Kysely<Database> | Transaction<Database>;
@@ -191,7 +191,9 @@ export async function loadSemanticModel(
 
   return {
     format: SEMANTIC_MODEL_FORMAT,
-    schema_version: SEMANTIC_SCHEMA_VERSION,
+    schema_version: (version.semantic_schema_version === '1.1'
+      ? '1.1'
+      : '1.0') as SemanticSchemaVersion,
     name: version.code,
     label: version.name,
     description: version.description,
@@ -299,7 +301,7 @@ export async function backfillSemanticModels(
         const hash = await writeSemanticModel(trx, row.model_version_id, semantic);
         await trx
           .updateTable('model_version')
-          .set({ semantic_schema_version: SEMANTIC_SCHEMA_VERSION, semantic_hash: hash })
+          .set({ semantic_schema_version: semantic.schema_version, semantic_hash: hash })
           .where('model_version_id', '=', row.model_version_id)
           .execute();
       });

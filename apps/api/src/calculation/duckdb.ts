@@ -5,6 +5,7 @@ import {
   validateCalculationPlan,
   type AllocateStage,
   type CalculationPlan,
+  type JoinStage,
   type PlanDriver,
   type PlanExpr,
   type PlanValueType,
@@ -150,6 +151,32 @@ function scanSql(stage: Extract<CalculationPlan['stages'][number], { op: 'scan' 
   return `SELECT ${stage.columns.map(quote).join(', ')} FROM ${from}`;
 }
 
+function joinStageSql(stage: JoinStage, previous: string): string {
+  const alias = quote(stage.alias);
+  const conditions = stage.on
+    .map((pair) => `p.${quote(pair.left)} = ${alias}.${quote(pair.right)}`)
+    .join(' AND ');
+  const projected = stage.columns
+    .map((column) => `${alias}.${quote(column.name)} AS ${quote(column.as)}`)
+    .join(', ');
+  const joinType = stage.type === 'inner' ? 'INNER JOIN' : 'LEFT JOIN';
+  return `SELECT p.*, ${projected} FROM ${previous} p ${joinType} ${quoteQualified(stage.source)} ${alias} ON ${conditions}`;
+}
+
+/**
+ * Returns a row when the joined source has duplicate keys. A many-to-one join
+ * is safe only when the target key is unique; the worker runs this before it
+ * writes a result.
+ */
+function joinKeyUniquenessSql(stage: JoinStage): string {
+  const keys = stage.on.map((pair) => quote(pair.right)).join(', ');
+  return `WITH totals AS (SELECT count(*) AS total FROM ${quoteQualified(stage.source)}),
+distinct_keys AS (SELECT count(*) AS key_count FROM (SELECT DISTINCT ${keys} FROM ${quoteQualified(stage.source)}) d)
+SELECT ${sqlString(stage.alias)} AS join_alias, total, key_count
+FROM totals, distinct_keys
+WHERE total > key_count`;
+}
+
 function allocateStageSql(
   stage: AllocateStage,
   previous: string,
@@ -247,6 +274,7 @@ export function compileDuckDbPlan(input: unknown): CompiledDuckDbPlan {
   let previous: string | null = null;
   let columns: string[] = [];
   let allocation: AllocateStage | undefined;
+  const joinStages: JoinStage[] = [];
 
   plan.stages.forEach((stage, index) => {
     switch (stage.op) {
@@ -273,6 +301,15 @@ export function compileDuckDbPlan(input: unknown): CompiledDuckDbPlan {
           `${name} AS (SELECT *, CAST(${expressionSql(stage.expression, plan.drivers)} AS ${stage.type}) AS ${quote(stage.name)} FROM ${previous})`
         );
         columns.push(stage.name);
+        previous = name;
+        break;
+      }
+      case 'join': {
+        if (!previous) throw new CalculationPlanError('missing_scan', '/stages', 'join appears before scan');
+        const name = `stage_${index}_join`;
+        ctes.push(`${name} AS (${joinStageSql(stage, previous)})`);
+        for (const column of stage.columns) columns.push(column.as);
+        joinStages.push(stage);
         previous = name;
         break;
       }
@@ -311,6 +348,12 @@ export function compileDuckDbPlan(input: unknown): CompiledDuckDbPlan {
     validations.push({
       check: 'pool_conservation',
       sql: poolConservationSql(allocation, sql),
+    });
+  }
+  for (const join of joinStages) {
+    validations.push({
+      check: 'join_key_uniqueness',
+      sql: joinKeyUniquenessSql(join),
     });
   }
 
